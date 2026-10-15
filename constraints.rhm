@@ -34,6 +34,7 @@ export:
   crossed
   exclude
   pin
+  no_repeats
 
 class Lev(trial, factor, level)
 class Comb(trial, combo)
@@ -127,3 +128,14 @@ constraint exclude(fi, li) ~given geom:
 // a level pinned to a particular trial
 constraint pin(i, fi, li) ~given geom:
   [at_least(1, [Lev(i, fi, li)])]
+
+// No two consecutive trials share a level of factor `fi`.
+// This is AtMostKInARow with k = 1: over each window of two adjacent
+// trials, at most one carries the level. Note that nothing in cnf_of or
+// holds_in changed to support it -- a window is just another set of atoms.
+constraint no_repeats(fi) ~given geom:
+  let nested:
+    for List (li in 0..geom.counts[fi]):
+      for List (i in 0..(geom.n_trials - 1)):
+        at_most(1, [Lev(i, fi, li), Lev(i + 1, fi, li)])
+  List.append(& nested)

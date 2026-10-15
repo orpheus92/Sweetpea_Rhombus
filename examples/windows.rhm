@@ -1,0 +1,29 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue", "green"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+let nr = [no_repeats(0)]            // colour must not repeat on adjacent trials
+
+println("6 trials, colour x size, no colour twice in a row\n")
+let seqs = synthesize_trials(plan, 3, ~constraints: nr, ~strategy: #'iterate, ~solver: S)
+for (s in seqs):
+  println("  " ++ to_string(for List (t in s): t[0]))
+
+println("\nchecker agrees on each: "
+          ++ to_string(for values(o = #true) (s in seqs):
+                         o && check_sequence(plan, s, ~constraints: nr) == []))
+let bad = [["red","small"],["red","large"],["blue","small"],
+           ["blue","large"],["green","small"],["green","large"]]
+println("a sequence with red,red first is rejected: "
+          ++ to_string(check_sequence(plan, bad, ~constraints: nr)))
+println("...and is fine WITHOUT the constraint: "
+          ++ to_string(check_sequence(plan, bad) == []))
