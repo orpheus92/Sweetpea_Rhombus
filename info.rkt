@@ -1,5 +1,5 @@
 #lang info
-(define collection "sweetpea-rhm")
+(define collection "sweetpea-rhombus")
 (define deps '("base" "rhombus-lib"))
 (define pkg-desc "A Rhombus front end for SweetPea experiment designs")
 (define version "0.1")

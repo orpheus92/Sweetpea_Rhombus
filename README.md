@@ -1,4 +1,4 @@
-# sp_r — SweetPea experiment designs in Rhombus
+# Sweetpea_Rhombus — SweetPea experiment designs in Rhombus
 
 ## What this is, in plain terms
 
@@ -90,7 +90,8 @@ producing nonsense.
 
 ## 4. Try it
 
-    git clone <this repo> && cd sp_r
+    git clone https://github.com/orpheus92/Sweetpea_Rhombus.git
+    cd Sweetpea_Rhombus
     racket examples/pilot.rhm
 
 Expect three four-trial sequences. If that works, everything is installed.
