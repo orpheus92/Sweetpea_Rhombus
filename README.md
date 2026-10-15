@@ -1,24 +1,34 @@
-# Sweetpea_Rhombus — SweetPea experiment designs in Rhombus
+# Sweetpea_Rhombus
 
-## What this is, in plain terms
+An implementation of SweetPea's experiment-design language in Rhombus.
 
-SweetPea generates trial sequences for behavioural experiments. You describe
-your experiment -- the factors, their levels, how they cross -- and it works
-out valid orderings of trials.
+## Overview
 
-This project does the same job, written in Rhombus instead of Python.
+SweetPea is a domain-specific language for specifying counterbalanced
+experimental designs. A design declares factors and their levels, states which
+factors must be crossed, and adds constraints; SweetPea then produces trial
+sequences that satisfy the specification.
 
-You write the design in a notation that reads like the experiment itself.
-Before anything runs, the design is checked: a misspelled factor name, a
-derived level with the wrong number of parameters, or a factor you crossed
-but forgot to declare will all stop the file from compiling. If the design is
-sound, it is turned into a logic problem, handed to a SAT solver, and the
-answer is turned back into trials.
+This project reimplements that capability in Rhombus. A design is written as a
+set of declarations in the host language, validated during compilation,
+encoded as a Boolean satisfiability problem, solved by an external SAT solver,
+and decoded back into trial sequences. No stage of the pipeline depends on the
+Python implementation.
 
-**No Python is involved at any point.**
+Validation occurs at expansion time and rejects three classes of
+specification error before any code executes: references to undeclared
+factors, derived levels whose arity contradicts their declaration, and factors
+named in a crossing but absent from the design. Errors are reported even when
+they occur in code paths that are never evaluated.
 
-This is a research pilot, not a tool to run a study with. See *What is not
-done* at the end.
+Constraints are declared once. A single declaration determines both the
+clauses given to the solver and the predicate used to verify a finished
+sequence, so the two representations cannot diverge. This property is the
+central design commitment of the implementation and is discussed in
+*Constraints: declared once, used twice* below.
+
+**Status.** This is a research pilot intended to evaluate the approach, not a
+tool for generating experiments used in studies. See *Limitations*.
 
 ---
 
@@ -233,7 +243,7 @@ Two strategies, two independent code paths, one declaration.
 
 ---
 
-# What is not done
+# Limitations
 
 Derived factors are parsed and statically checked but **not encoded** --
 `synthesize_trials` rejects them, so the Stroop example cannot be
