@@ -1,0 +1,30 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../synthesize.rhm" open
+
+fun check(label, exp, n_expected_trials, n_samples):
+  let trials = synthesize_trials(exp, n_samples, ~solver: "cryptominisat5")
+  println(label)
+  println("  sequences: " ++ to_string(trials.length()))
+  for (seq in trials):
+    let combos = Set(& seq)
+    let ok = seq.length() == n_expected_trials && combos.length() == n_expected_trials
+    println("    " ++ (if ok | "OK  " | "BAD ") ++ to_string(seq))
+  let distinct = Set(& trials).length()
+  println("  distinct sequences: " ++ to_string(distinct)
+            ++ (if distinct == trials.length() | "  (all different)" | "  <-- DUPLICATES"))
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment two_by_two:
+  ~design: [color, size]
+  ~cross: [color, size]
+check("2x2  (expect 4 trials, every colour-size pair once)", two_by_two, 4, 3)
+
+factor task: ["A", "B", "C"]
+factor hand: ["left", "right"]
+experiment three_by_two:
+  ~design: [task, hand]
+  ~cross: [task, hand]
+check("3x2  (expect 6 trials)", three_by_two, 6, 2)

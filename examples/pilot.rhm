@@ -1,0 +1,16 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let trials = synthesize_trials(plan, 3, ~solver: "cryptominisat5")
+println("sequences found: " ++ to_string(trials.length()))
+for (t in trials):
+  println("  " ++ to_string(t))

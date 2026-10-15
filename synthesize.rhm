@@ -1,0 +1,204 @@
+#lang rhombus
+import:
+  rhombus/subprocess
+  "sweetpea.rhm" open
+
+export:
+  synthesize_trials
+  encode
+
+// ------------------------------------------------------------------ util
+fun product(ns :: List) :: Int:
+  for values(acc = 1) (n in ns):
+    acc * n
+
+fun sum(ns :: List) :: Int:
+  for values(acc = 0) (n in ns):
+    acc + n
+
+fun combinations(counts :: List) :: List:
+  match counts
+  | []: [[]]
+  | ~else:
+      let tails = combinations(counts.drop(1))
+      let nested:
+        for List (i in 0..counts[0]):
+          for List (t in tails):
+            List.cons(i, t)
+      List.append(& nested)
+
+fun pairs(n :: Int) :: List:
+  let nested:
+    for List (a in 0..n):
+      for List (b in (a+1)..n):
+        [a, b]
+  List.append(& nested)
+
+// at most one of `vars` is true: pairwise negative clauses
+fun at_most_one(vars :: List) :: List:
+  for List (p in pairs(vars.length())):
+    [- vars[p[0]], - vars[p[1]]]
+
+// exactly one of `vars` is true
+fun exactly_one(vars :: List) :: List:
+  List.cons(vars, at_most_one(vars))
+
+// ------------------------------------------------------------- encoding
+// DIMACS variables, 1-based:
+//   x(i,f,l)  trial i assigns factor f its level l
+//   c(i,j)    trial i realises combination j
+class Encoding(n_vars, clauses, n_trials, counts, base, width, factors)
+
+fun encode(exp :: Experiment) :: Encoding:
+  let facs = exp.design
+  for (f in facs):
+    when f.params != []
+    | error("synthesize_trials: derived factors not supported yet: " ++ f.name)
+  when exp.cross.length() != facs.length()
+  | error("synthesize_trials: this pilot requires every design factor to be crossed")
+
+  let counts = for List (f in facs): f.levels.length()
+  let n_f = facs.length()
+  let width = sum(counts)
+  let n_trials = product(counts)
+  let base:
+    for List (fi in 0..n_f):
+      sum(counts.take(fi))
+  let combos = combinations(counts)
+  let c_offset = n_trials * width
+
+  fun x(i, fi, li): i * width + base[fi] + li + 1
+  fun c(i, j): c_offset + i * n_trials + j + 1
+
+  // one level per factor per trial
+  let consistency:
+    let nested:
+      for List (i in 0..n_trials):
+        let per_factor:
+          for List (fi in 0..n_f):
+            let vars:
+              for List (li in 0..counts[fi]):
+                x(i, fi, li)
+            exactly_one(vars)
+        List.append(& per_factor)
+    List.append(& nested)
+
+  // c(i,j) is true exactly when trial i holds combination j
+  let defines:
+    let nested:
+      for List (i in 0..n_trials):
+        let per_combo:
+          for List (j in 0..n_trials):
+            let combo = combos[j]
+            let negs:
+              for List (fi in 0..n_f):
+                - x(i, fi, combo[fi])
+            let forward = List.add(negs, c(i, j))
+            let backward:
+              for List (fi in 0..n_f):
+                [- c(i, j), x(i, fi, combo[fi])]
+            List.cons(forward, backward)
+        List.append(& per_combo)
+    List.append(& nested)
+
+  // every combination occurs exactly once over the whole sequence
+  let crossing:
+    let nested:
+      for List (j in 0..n_trials):
+        let vars:
+          for List (i in 0..n_trials):
+            c(i, j)
+        exactly_one(vars)
+    List.append(& nested)
+
+  Encoding(c_offset + n_trials * n_trials,
+           consistency ++ defines ++ crossing,
+           n_trials, counts, base, width, facs)
+
+// --------------------------------------------------------------- DIMACS
+fun write_cnf(enc :: Encoding, extra :: List, path :: String) :: Void:
+  let all = enc.clauses ++ extra
+  let out = Port.Output.open_file(path, ~exists: #'truncate)
+  Port.Output.using out:
+    println("p cnf " ++ to_string(enc.n_vars) ++ " " ++ to_string(all.length()))
+    for (cl in all):
+      let line:
+        for values(s = "") (v in cl):
+          s ++ to_string(v) ++ " "
+      println(line ++ "0")
+  out.close()
+
+fun read_all(path :: String) :: String:
+  let ip = Port.Input.open_file(path)
+  let s:
+    for values(acc = "") (line in ip.lines()):
+      acc ++ line ++ "\n"
+  ip.close()
+  s
+
+// --------------------------------------------------------------- solving
+// Runs a DIMACS solver and returns the model as a list of signed ints,
+// or #false if the formula is unsatisfiable.
+fun solve(cnf_path :: String, solver :: String):
+  when !subprocess.find_executable_path(solver)
+  | error("synthesize_trials: solver not found on PATH: " ++ solver
+            ++ "\n  install one with:  brew install cryptominisat")
+  let out_path = cnf_path ++ ".out"
+  let out = Port.Output.open_file(out_path, ~exists: #'truncate)
+  let sp = subprocess.run(solver, ~out: out, ~err: #'pipe, cnf_path)
+  sp.wait()
+  out.close()
+  let text = read_all(out_path)
+  cond
+  | text.contains("s UNSATISFIABLE"): #false
+  | ~else:
+      when !text.contains("s SATISFIABLE")
+      | error("synthesize_trials: solver `" ++ solver
+                ++ "` produced no recognisable answer.\n  output was:\n"
+                ++ text ++ "  (expected DIMACS `s SATISFIABLE` / `v ...` lines)")
+      let v_lines = text.split("\n").filter(~keep: fun (l): l.length() > 0 && l[0] == Char"v")
+      let toks:
+        for values(acc = []) (l in v_lines):
+          acc ++ l.split().drop(1)
+      let ints = toks.map(fun (t): String.to_int(t))
+      let model = ints.filter(~keep: fun (v): v && v != 0)
+      when model.length() == 0
+      | error("synthesize_trials: solver reported SATISFIABLE but gave no model")
+      model
+
+// ------------------------------------------------------------- decoding
+fun decode(enc :: Encoding, model :: List) :: List:
+  let truths = Set(& model.filter(~keep: fun (v): v > 0))
+  for List (i in 0..enc.n_trials):
+    for List (fi in 0..enc.factors.length()):
+      let f = enc.factors[fi]
+      let hits:
+        for values(acc = []) (li in 0..enc.counts[fi]):
+          let v = i * enc.width + enc.base[fi] + li + 1
+          if truths.contains(v) | List.add(acc, li) | acc
+      when hits.length() != 1
+      | error("synthesize_trials: decoding failed -- trial " ++ to_string(i)
+                ++ ", factor " ++ f.name ++ " has " ++ to_string(hits.length())
+                ++ " levels set (expected exactly 1). The solver's model does not"
+                ++ " match the encoding; check that `" ++ to_string(enc.n_vars)
+                ++ "` variables came back.")
+      f.levels[hits[0]]
+
+// ---------------------------------------------------------------- public
+fun gather(enc, n, blocking, acc, solver, tmp):
+  if n == 0
+  | acc
+  | write_cnf(enc, blocking, tmp)
+    let model = solve(tmp, solver)
+    if model
+    | let trial = decode(enc, model)
+      let level_vars = model.filter(~keep: fun (v): v > 0 && v <= enc.n_trials * enc.width)
+      let block = level_vars.map(fun (v): - v)
+      gather(enc, n - 1, List.add(blocking, block), List.add(acc, trial), solver, tmp)
+    | acc
+
+fun synthesize_trials(exp :: Experiment,
+                      count :: Int = 1,
+                      ~solver: solver :: String = "cryptominisat5",
+                      ~tmp: tmp :: String = "/tmp/sp_r.cnf") :: List:
+  gather(encode(exp), count, [], [], solver, tmp)
