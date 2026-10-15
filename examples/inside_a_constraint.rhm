@@ -1,0 +1,41 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let geom = geometry_of(plan)
+println("geometry: " ++ to_string(geom.n_trials) ++ " trials, factors "
+          ++ to_string(for List (f in geom.factors): f.name)
+          ++ ", combinations " ++ to_string(geom.combos))
+
+fun show(c, seq):
+  println("\n--- constraint `" ++ c.name ++ "` ---")
+  let reqs = (c.reqs)(geom)
+  println("  produces " ++ to_string(reqs.length()) ++ " requirement(s)")
+  for (r in reqs.take(math.min(3, reqs.length()))):
+    println("    of " ++ to_string(r.atoms.length()) ++ " atoms, between "
+              ++ to_string(r.lo) ++ " and " ++ to_string(r.hi) ++ " true")
+    println("      atoms:   " ++ to_string(r.atoms))
+  // the SAME requirements, through each consumer
+  let (var_of, n_vars, w, b) = numbering(geom)
+  let cls:
+    let nested: for List (r in reqs): cnf_of(r, var_of)
+    List.append(& nested)
+  println("  cnf_of  -> " ++ to_string(cls.length()) ++ " clause(s), e.g. "
+            ++ to_string(cls.take(math.min(3, cls.length()))))
+  let is_set = checker_for(geom, seq)
+  let verdict:
+    for values(o = #true) (r in reqs): o && holds_in(r, is_set)
+  println("  holds_in on " ++ to_string(seq[0]) ++ "... -> " ++ to_string(verdict))
+
+let seq = [["red","large"], ["blue","large"], ["blue","small"], ["red","small"]]
+show(pin(0, 0, 0), seq)
+show(exclude(1, 0), seq)
+show(consistent(), seq)

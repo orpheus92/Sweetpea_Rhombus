@@ -9,6 +9,8 @@ export:
   check_sequence
   count_sequences
   geometry_of
+  numbering      // exposed so examples can show the encoding
+  checker_for
 
 // ------------------------------------------------------------------ util
 fun product(ns :: List) :: Int:
