@@ -1,0 +1,32 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+factor hand:  ["left", "right"]     // in the design, NOT crossed
+
+experiment plan:
+  ~design: [color, size, hand]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+println("design = colour, size, hand;  cross = colour, size")
+println("trials = " ++ to_string(geometry_of(plan).n_trials)
+          ++ "   (2x2 from the crossing, not 2x2x2 from the design)\n")
+
+println("~strategy: #'iterate")
+for (s in synthesize_trials(plan, 2, ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(s))
+
+println("\n~strategy: #'random  (hand should vary freely)")
+let rs = synthesize_trials(plan, 4, ~strategy: #'random)
+for (s in rs): println("  " ++ to_string(for List (t in s): t[2]))
+
+println("\nchecker accepts all: "
+          ++ to_string(for values(o = #true) (s in rs): o && check_sequence(plan, s) == []))
+println("crossing still enforced (4 distinct colour-size pairs in each): "
+          ++ to_string(for values(o = #true) (s in rs):
+                         o && Set(& (for List (t in s): [t[0], t[1]])).length() == 4))

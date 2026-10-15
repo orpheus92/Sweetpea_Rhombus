@@ -39,7 +39,7 @@ export:
 class Lev(trial, factor, level)
 class Comb(trial, combo)
 class Req(atoms, lo, hi)
-class Geom(n_trials, factors, counts, combos)
+class Geom(n_trials, factors, counts, combos, cross_idx)
 class Constraint(name, reqs)
 
 fun exactly(n, atoms):  Req(atoms, n, n)
@@ -117,6 +117,10 @@ constraint crossed() ~given geom:
           Comb(i, j)
       exactly(1, atoms)
   per_combo ++ per_trial
+
+// NOTE: a Comb atom names a combination of the CROSSED factors only.
+// Factors that appear in ~design but not in ~cross are still subject to
+// `consistent` -- one level per trial -- but are otherwise free.
 
 // a level that must never appear
 constraint exclude(fi, li) ~given geom:

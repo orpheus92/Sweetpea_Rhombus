@@ -36,10 +36,14 @@ let chi2:
 println("expected per sequence:   " ++ to_string(expected))
 println("chi-square (df=" ++ to_string(n_possible - 1) ++ "):     "
           ++ to_string(math.round(chi2 * 100.0) / 100.0))
-println("  critical value at p=.05 for df=23 is 35.17")
-println("  verdict: " ++ (if chi2 < 35.17
+// A chi-square test at p=.05 rejects a *correct* sampler about 1 run in 20,
+// which would make this suite flaky. We assert at p=.001 (critical value
+// 49.73 for df=23) and print the p=.05 value for information.
+println("  p=.05  critical value for df=23: 35.17  (informational)")
+println("  p=.001 critical value for df=23: 49.73  (what this test asserts)")
+println("  verdict: " ++ (if chi2 < 49.73
                           | "consistent with uniform"
-                          | "NOT consistent with uniform"))
+                          | "NOT consistent with uniform -- investigate"))
 
 // and the contrast: #'iterate is deterministic
 println("\n~strategy: #'iterate run twice:")

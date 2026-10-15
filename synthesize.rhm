@@ -35,10 +35,19 @@ fun geometry_of(exp :: Experiment) :: Geom:
   for (f in exp.design):
     when f.params != []
     | error("synthesize_trials: derived factors are not encoded yet: " ++ f.name)
-  when exp.cross.length() != exp.design.length()
-  | error("synthesize_trials: this pilot requires every design factor to be crossed")
   let counts = for List (f in exp.design): f.levels.length()
-  Geom(product(counts), exp.design, counts, combinations(counts))
+  // which design positions are crossed
+  let cross_idx:
+    for values(acc = []) (fi in 0..exp.design.length()):
+      let nm = exp.design[fi].name
+      let is_crossed:
+        for values(o = #false) (c in exp.cross): o || c.name == nm
+      if is_crossed | List.add(acc, fi) | acc
+  when cross_idx.length() == 0
+  | error("synthesize_trials: ~cross is empty")
+  let cross_counts = for List (fi in cross_idx): counts[fi]
+  Geom(product(cross_counts), exp.design, counts,
+       combinations(cross_counts), cross_idx)
 
 // Variable numbering. Lev atoms come first, then Comb atoms.
 fun numbering(geom :: Geom):
@@ -64,12 +73,12 @@ fun comb_definition(geom :: Geom, var_of) :: List:
         for List (j in 0..geom.combos.length()):
           let combo = geom.combos[j]
           let negs:
-            for List (fi in 0..geom.factors.length()):
-              - var_of(Lev(i, fi, combo[fi]))
+            for List (k in 0..geom.cross_idx.length()):
+              - var_of(Lev(i, geom.cross_idx[k], combo[k]))
           let forward = List.add(negs, var_of(Comb(i, j)))
           let backward:
-            for List (fi in 0..geom.factors.length()):
-              [- var_of(Comb(i, j)), var_of(Lev(i, fi, combo[fi]))]
+            for List (k in 0..geom.cross_idx.length()):
+              [- var_of(Comb(i, j)), var_of(Lev(i, geom.cross_idx[k], combo[k]))]
           List.cons(forward, backward)
       List.append(& per_j)
   List.append(& nested)
@@ -152,8 +161,9 @@ fun checker_for(geom :: Geom, seq :: List):
     | Lev(i, fi, li): seq[i][fi] == geom.factors[fi].levels[li]
     | Comb(i, j):
         let combo = geom.combos[j]
-        for values(ok = #true) (fi in 0..geom.factors.length()):
-          ok && seq[i][fi] == geom.factors[fi].levels[combo[fi]]
+        for values(ok = #true) (k in 0..geom.cross_idx.length()):
+          let fi = geom.cross_idx[k]
+          ok && seq[i][fi] == geom.factors[fi].levels[combo[k]]
 
 // Returns the names of the constraints the sequence violates ([] if sound).
 fun check_sequence(exp :: Experiment, seq :: List,
@@ -195,10 +205,19 @@ fun shuffle(lst :: List) :: List:
   | let i = math.random(lst.length())
     List.cons(lst[i], shuffle(lst.take(i) ++ lst.drop(i + 1)))
 
+// Build a candidate: the crossed factors follow `order`; any factor in
+// ~design but not in ~cross gets a random level, since it is unconstrained
+// by the crossing.
 fun as_seq(geom :: Geom, order :: List) :: List:
-  for List (combo in order):
+  for List (t in 0..order.length()):
+    let combo = order[t]
     for List (fi in 0..geom.factors.length()):
-      geom.factors[fi].levels[combo[fi]]
+      let k:
+        for values(found = -1) (m in 0..geom.cross_idx.length()):
+          if geom.cross_idx[m] == fi | m | found
+      if k >= 0
+      | geom.factors[fi].levels[combo[k]]
+      | geom.factors[fi].levels[math.random(geom.counts[fi])]
 
 // Rejection sampling: propose a random ordering, keep it only if the
 // checker -- the same requirements the solver was given -- accepts it.
