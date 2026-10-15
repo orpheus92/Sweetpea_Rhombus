@@ -2,20 +2,21 @@
 import:
   rhombus/subprocess
   "sweetpea.rhm" open
+  "constraints.rhm" open
 
 export:
   synthesize_trials
+  check_sequence
   count_sequences
-  encode
+  geometry_of
 
 // ------------------------------------------------------------------ util
 fun product(ns :: List) :: Int:
-  for values(acc = 1) (n in ns):
-    acc * n
-
+  for values(acc = 1) (n in ns): acc * n
 fun sum(ns :: List) :: Int:
-  for values(acc = 0) (n in ns):
-    acc + n
+  for values(acc = 0) (n in ns): acc + n
+fun factorial(n :: Int) :: Int:
+  if n <= 1 | 1 | n * factorial(n - 1)
 
 fun combinations(counts :: List) :: List:
   match counts
@@ -24,126 +25,89 @@ fun combinations(counts :: List) :: List:
       let tails = combinations(counts.drop(1))
       let nested:
         for List (i in 0..counts[0]):
-          for List (t in tails):
-            List.cons(i, t)
+          for List (t in tails): List.cons(i, t)
       List.append(& nested)
 
-fun pairs(n :: Int) :: List:
+// --------------------------------------------------------------- geometry
+fun geometry_of(exp :: Experiment) :: Geom:
+  for (f in exp.design):
+    when f.params != []
+    | error("synthesize_trials: derived factors are not encoded yet: " ++ f.name)
+  when exp.cross.length() != exp.design.length()
+  | error("synthesize_trials: this pilot requires every design factor to be crossed")
+  let counts = for List (f in exp.design): f.levels.length()
+  Geom(product(counts), exp.design, counts, combinations(counts))
+
+// Variable numbering. Lev atoms come first, then Comb atoms.
+fun numbering(geom :: Geom):
+  let width = sum(geom.counts)
+  let base:
+    for List (fi in 0..geom.factors.length()):
+      sum(geom.counts.take(fi))
+  let c_offset = geom.n_trials * width
+  let n_combos = geom.combos.length()
+  fun var_of(a):
+    match a
+    | Lev(i, fi, li): i * width + base[fi] + li + 1
+    | Comb(i, j): c_offset + i * n_combos + j + 1
+  values(var_of, c_offset + geom.n_trials * n_combos, width, base)
+
+// The Comb variables are part of the encoding machinery, not a constraint:
+// these clauses say c(i,j) is true exactly when trial i holds combination j.
+// They are emitted once, like the variable allocation itself.
+fun comb_definition(geom :: Geom, var_of) :: List:
   let nested:
-    for List (a in 0..n):
-      for List (b in (a+1)..n):
-        [a, b]
+    for List (i in 0..geom.n_trials):
+      let per_j:
+        for List (j in 0..geom.combos.length()):
+          let combo = geom.combos[j]
+          let negs:
+            for List (fi in 0..geom.factors.length()):
+              - var_of(Lev(i, fi, combo[fi]))
+          let forward = List.add(negs, var_of(Comb(i, j)))
+          let backward:
+            for List (fi in 0..geom.factors.length()):
+              [- var_of(Comb(i, j)), var_of(Lev(i, fi, combo[fi]))]
+          List.cons(forward, backward)
+      List.append(& per_j)
   List.append(& nested)
 
-// at most one of `vars` is true: pairwise negative clauses
-fun at_most_one(vars :: List) :: List:
-  for List (p in pairs(vars.length())):
-    [- vars[p[0]], - vars[p[1]]]
-
-// exactly one of `vars` is true
-fun exactly_one(vars :: List) :: List:
-  List.cons(vars, at_most_one(vars))
-
-// ------------------------------------------------------------- encoding
-// DIMACS variables, 1-based:
-//   x(i,f,l)  trial i assigns factor f its level l
-//   c(i,j)    trial i realises combination j
-class Encoding(n_vars, clauses, n_trials, counts, base, width, factors, combos)
-
-fun encode(exp :: Experiment) :: Encoding:
-  let facs = exp.design
-  for (f in facs):
-    when f.params != []
-    | error("synthesize_trials: derived factors not supported yet: " ++ f.name)
-  when exp.cross.length() != facs.length()
-  | error("synthesize_trials: this pilot requires every design factor to be crossed")
-
-  let counts = for List (f in facs): f.levels.length()
-  let n_f = facs.length()
-  let width = sum(counts)
-  let n_trials = product(counts)
-  let base:
-    for List (fi in 0..n_f):
-      sum(counts.take(fi))
-  let combos = combinations(counts)
-  let c_offset = n_trials * width
-
-  fun x(i, fi, li): i * width + base[fi] + li + 1
-  fun c(i, j): c_offset + i * n_trials + j + 1
-
-  // one level per factor per trial
-  let consistency:
-    let nested:
-      for List (i in 0..n_trials):
-        let per_factor:
-          for List (fi in 0..n_f):
-            let vars:
-              for List (li in 0..counts[fi]):
-                x(i, fi, li)
-            exactly_one(vars)
-        List.append(& per_factor)
-    List.append(& nested)
-
-  // c(i,j) is true exactly when trial i holds combination j
-  let defines:
-    let nested:
-      for List (i in 0..n_trials):
-        let per_combo:
-          for List (j in 0..n_trials):
-            let combo = combos[j]
-            let negs:
-              for List (fi in 0..n_f):
-                - x(i, fi, combo[fi])
-            let forward = List.add(negs, c(i, j))
-            let backward:
-              for List (fi in 0..n_f):
-                [- c(i, j), x(i, fi, combo[fi])]
-            List.cons(forward, backward)
-        List.append(& per_combo)
-    List.append(& nested)
-
-  // every combination occurs exactly once over the whole sequence
-  let crossing:
-    let nested:
-      for List (j in 0..n_trials):
-        let vars:
-          for List (i in 0..n_trials):
-            c(i, j)
-        exactly_one(vars)
-    List.append(& nested)
-
-  Encoding(c_offset + n_trials * n_trials,
-           consistency ++ defines ++ crossing,
-           n_trials, counts, base, width, facs, combos)
+// Every constraint in play, built-ins first.
+fun all_reqs(geom :: Geom, extra :: List) :: List:
+  let cs = List.cons(consistent(), List.cons(crossed(), extra))
+  let nested:
+    for List (c in cs):
+      (c.reqs)(geom)
+  List.append(& nested)
 
 // --------------------------------------------------------------- DIMACS
-fun write_cnf(enc :: Encoding, extra :: List, path :: String) :: Void:
-  let all = enc.clauses ++ extra
+fun write_cnf(geom, var_of, n_vars, reqs, blocking, path) :: Void:
+  let from_reqs:
+    let nested:
+      for List (r in reqs): cnf_of(r, var_of)
+    List.append(& nested)
+  let all = comb_definition(geom, var_of) ++ from_reqs ++ blocking
   let out = Port.Output.open_file(path, ~exists: #'truncate)
   Port.Output.using out:
-    println("p cnf " ++ to_string(enc.n_vars) ++ " " ++ to_string(all.length()))
+    println("p cnf " ++ to_string(n_vars) ++ " " ++ to_string(all.length()))
     for (cl in all):
       let line:
-        for values(s = "") (v in cl):
-          s ++ to_string(v) ++ " "
+        for values(s = "") (v in cl): s ++ to_string(v) ++ " "
       println(line ++ "0")
   out.close()
 
 fun read_all(path :: String) :: String:
   let ip = Port.Input.open_file(path)
   let s:
-    for values(acc = "") (line in ip.lines()):
-      acc ++ line ++ "\n"
+    for values(acc = "") (line in ip.lines()): acc ++ line ++ "\n"
   ip.close()
   s
 
-// --------------------------------------------------------------- solving
-// Runs a DIMACS solver and returns the model as a list of signed ints,
-// or #false if the formula is unsatisfiable.
 fun solve(cnf_path :: String, solver :: String):
   when !subprocess.find_executable_path(solver)
   | error("synthesize_trials: solver not found on PATH: " ++ solver
-            ++ "\n  install one with:  brew install cryptominisat")
+            ++ "\n  install one with:  brew install cryptominisat"
+            ++ "\n  or use ~strategy: #'random, which needs no solver")
   let out_path = cnf_path ++ ".out"
   let out = Port.Output.open_file(out_path, ~exists: #'truncate)
   let sp = subprocess.run(solver, ~out: out, ~err: #'pipe, cnf_path)
@@ -155,93 +119,115 @@ fun solve(cnf_path :: String, solver :: String):
   | ~else:
       when !text.contains("s SATISFIABLE")
       | error("synthesize_trials: solver `" ++ solver
-                ++ "` produced no recognisable answer.\n  output was:\n"
-                ++ text ++ "  (expected DIMACS `s SATISFIABLE` / `v ...` lines)")
+                ++ "` gave no recognisable answer:\n" ++ text)
       let v_lines = text.split("\n").filter(~keep: fun (l): l.length() > 0 && l[0] == Char"v")
       let toks:
-        for values(acc = []) (l in v_lines):
-          acc ++ l.split().drop(1)
-      let ints = toks.map(fun (t): String.to_int(t))
-      let model = ints.filter(~keep: fun (v): v && v != 0)
+        for values(acc = []) (l in v_lines): acc ++ l.split().drop(1)
+      let model = toks.map(fun (t): String.to_int(t)).filter(~keep: fun (v): v && v != 0)
       when model.length() == 0
-      | error("synthesize_trials: solver reported SATISFIABLE but gave no model")
+      | error("synthesize_trials: solver said SATISFIABLE but returned no model")
       model
 
 // ------------------------------------------------------------- decoding
-fun decode(enc :: Encoding, model :: List) :: List:
+fun decode(geom :: Geom, var_of, model :: List) :: List:
   let truths = Set(& model.filter(~keep: fun (v): v > 0))
-  for List (i in 0..enc.n_trials):
-    for List (fi in 0..enc.factors.length()):
-      let f = enc.factors[fi]
+  for List (i in 0..geom.n_trials):
+    for List (fi in 0..geom.factors.length()):
       let hits:
-        for values(acc = []) (li in 0..enc.counts[fi]):
-          let v = i * enc.width + enc.base[fi] + li + 1
-          if truths.contains(v) | List.add(acc, li) | acc
+        for values(acc = []) (li in 0..geom.counts[fi]):
+          if truths.contains(var_of(Lev(i, fi, li))) | List.add(acc, li) | acc
       when hits.length() != 1
-      | error("synthesize_trials: decoding failed -- trial " ++ to_string(i)
-                ++ ", factor " ++ f.name ++ " has " ++ to_string(hits.length())
-                ++ " levels set (expected exactly 1). The solver's model does not"
-                ++ " match the encoding; check that `" ++ to_string(enc.n_vars)
-                ++ "` variables came back.")
-      f.levels[hits[0]]
+      | error("decode: trial " ++ to_string(i) ++ ", factor "
+                ++ geom.factors[fi].name ++ " has " ++ to_string(hits.length())
+                ++ " levels set (expected 1)")
+      geom.factors[fi].levels[hits[0]]
 
-// ---------------------------------------------------------------- public
-fun gather(enc, n, blocking, acc, solver, tmp):
+// ---------------------------------------------- checking, from the SAME reqs
+// A sequence is a list of trials, each a list of level names.
+fun checker_for(geom :: Geom, seq :: List):
+  fun (a):
+    match a
+    | Lev(i, fi, li): seq[i][fi] == geom.factors[fi].levels[li]
+    | Comb(i, j):
+        let combo = geom.combos[j]
+        for values(ok = #true) (fi in 0..geom.factors.length()):
+          ok && seq[i][fi] == geom.factors[fi].levels[combo[fi]]
+
+// Returns the names of the constraints the sequence violates ([] if sound).
+fun check_sequence(exp :: Experiment, seq :: List,
+                   ~constraints: extra :: List = []) :: List:
+  let geom = geometry_of(exp)
+  let is_set = checker_for(geom, seq)
+  let cs = List.cons(consistent(), List.cons(crossed(), extra))
+  let bad:
+    for values(acc = []) (c in cs):
+      let rs = (c.reqs)(geom)
+      let ok:
+        for values(o = #true) (r in rs): o && holds_in(r, is_set)
+      if ok | acc | List.add(acc, c.name)
+  bad
+
+// -------------------------------------------------------------- strategies
+fun gather(geom, var_of, n_vars, reqs, n, blocking, acc, solver, tmp):
   if n == 0
   | acc
-  | write_cnf(enc, blocking, tmp)
+  | write_cnf(geom, var_of, n_vars, reqs, blocking, tmp)
     let model = solve(tmp, solver)
     if model
-    | let trial = decode(enc, model)
-      let level_vars = model.filter(~keep: fun (v): v > 0 && v <= enc.n_trials * enc.width)
-      let block = level_vars.map(fun (v): - v)
-      gather(enc, n - 1, List.add(blocking, block), List.add(acc, trial), solver, tmp)
+    | let seq = decode(geom, var_of, model)
+      let lev_vars:
+        for values(a = []) (i in 0..geom.n_trials):
+          for values(b = a) (fi in 0..geom.factors.length()):
+            let li:
+              for values(found = 0) (k in 0..geom.counts[fi]):
+                if geom.factors[fi].levels[k] == seq[i][fi] | k | found
+            List.add(b, var_of(Lev(i, fi, li)))
+      let block = lev_vars.map(fun (v): - v)
+      gather(geom, var_of, n_vars, reqs, n - 1,
+             List.add(blocking, block), List.add(acc, seq), solver, tmp)
     | acc
 
-// --------------------------------------------------- uniform enumeration
-// Within this pilot's scope -- plain factors, fully crossed, no other
-// constraints -- the valid sequences are exactly the orderings of the
-// combination list. So a uniformly random ordering is a uniformly random
-// valid sequence, and the number of them is T factorial. No solver needed.
 fun shuffle(lst :: List) :: List:
   if lst.length() == 0
   | []
   | let i = math.random(lst.length())
     List.cons(lst[i], shuffle(lst.take(i) ++ lst.drop(i + 1)))
 
-fun factorial(n :: Int) :: Int:
-  if n <= 1 | 1 | n * factorial(n - 1)
-
-fun as_trials(enc :: Encoding, order :: List) :: List:
+fun as_seq(geom :: Geom, order :: List) :: List:
   for List (combo in order):
-    for List (fi in 0..enc.factors.length()):
-      enc.factors[fi].levels[combo[fi]]
+    for List (fi in 0..geom.factors.length()):
+      geom.factors[fi].levels[combo[fi]]
 
-fun sample_uniformly(enc :: Encoding, n :: Int) :: List:
-  for List (k in 0..n):
-    as_trials(enc, shuffle(enc.combos))
+// Rejection sampling: propose a random ordering, keep it only if the
+// checker -- the same requirements the solver was given -- accepts it.
+// This is how SweetPea's RandomGen works, and it means the two strategies
+// are answering the same question by different means.
+fun sample_uniformly(exp, geom, extra, n, tries_left):
+  if n == 0
+  | []
+  | if tries_left == 0
+    | error("synthesize_trials: #'random gave up after many rejections;"
+              ++ " the constraints may be too tight for rejection sampling")
+    | let cand = as_seq(geom, shuffle(geom.combos))
+      if check_sequence(exp, cand, ~constraints: extra) == []
+      | List.cons(cand, sample_uniformly(exp, geom, extra, n - 1, 10000))
+      | sample_uniformly(exp, geom, extra, n, tries_left - 1)
 
-// How many distinct valid sequences this design admits.
 fun count_sequences(exp :: Experiment) :: Int:
-  factorial(encode(exp).n_trials)
+  factorial(geometry_of(exp).n_trials)
 
 // ---------------------------------------------------------------- public
-// ~strategy:
-//   #'iterate  solve the CNF, forbid that answer, solve again.
-//               Distinct sequences, but NOT uniformly sampled -- you get
-//               whatever the solver happens to prefer. SweetPea calls this
-//               IterateSATGen.
-//   #'random   pick a uniformly random valid sequence, directly.
-//               Exactly uniform, and samples WITH replacement, so two
-//               draws may coincide. SweetPea calls this RandomGen.
 fun synthesize_trials(exp :: Experiment,
                       count :: Int = 1,
+                      ~constraints: extra :: List = [],
                       ~strategy: strategy :: Symbol = #'iterate,
                       ~solver: solver :: String = "cryptominisat5",
                       ~tmp: tmp :: String = "/tmp/sp_r.cnf") :: List:
-  let enc = encode(exp)
+  let geom = geometry_of(exp)
+  let (var_of, n_vars, width, base) = numbering(geom)
+  let reqs = all_reqs(geom, extra)
   match strategy
-  | #'iterate: gather(enc, count, [], [], solver, tmp)
-  | #'random: sample_uniformly(enc, count)
+  | #'iterate: gather(geom, var_of, n_vars, reqs, count, [], [], solver, tmp)
+  | #'random: sample_uniformly(exp, geom, extra, count, 10000)
   | ~else: error("synthesize_trials: unknown ~strategy: " ++ to_string(strategy)
-                   ++ "\n  known strategies: #\'iterate, #\'random")
+                   ++ "\n  known: #'iterate, #'random")

@@ -78,10 +78,56 @@ Racket 9.3 or later, Rhombus, and a DIMACS SAT solver.
     racket tests/uniformity.rhm    # check #\'random really is uniform
     tests/run-tests.sh             # designs that must FAIL to compile
 
+## Constraints: declared once, used twice
+
+This is the part that makes it a language rather than a library.
+
+A constraint says which *requirements* hold for a design. Every requirement
+has one shape -- of this set of atoms, between `lo` and `hi` are true:
+
+    constraint pin(i, fi, li) ~given geom:
+      [at_least(1, [Lev(i, fi, li)])]
+
+    constraint exclude(fi, li) ~given geom:
+      let atoms: for List (i in 0..geom.n_trials): Lev(i, fi, li)
+      [at_most(0, atoms)]
+
+From that one declaration, two things are derived by shared code:
+
+    cnf_of(req, var_of)    clauses for the solver
+    holds_in(req, is_set)  a check against a finished sequence
+
+A constraint author writes neither. There is no second copy to keep in step,
+so the encoder and the checker **cannot** disagree.
+
+That matters because they can and do elsewhere. SweetPea writes every
+constraint twice -- 13 constraints, 253 lines of encoder and 119 of checker --
+with nothing tying them together. One pair drifted: `Sequential`, where
+`constraint.py:1232` divides by the segment length and `:1487` does not. The
+result was `RandomGen` returning sessions in the wrong order and reporting
+success. It is still that way on upstream master.
+
+`tests/agreement.rhm` asserts the property SweetPea has no way to state:
+
+    ok  every solver result passes the checker (24 sequences)
+    ok  with pin(trial 0, color=red): solver obeys it and the checker agrees
+    ok  #'random obeys the same constraint (50 draws)
+    ok  a sequence starting with the wrong colour is rejected by pin
+    ok  a sequence repeating one combination is rejected by crossed
+    ok  excluding a level needed by the crossing yields 0 sequences
+
+The third line is the sharpest: `#'random` finds sequences by rejection
+sampling, using `holds_in`, while `#'iterate` finds them by solving clauses
+from `cnf_of`. Two strategies, two code paths, one declaration. If the
+declaration were wrong they would fail together; if the derivation were
+wrong they would disagree.
+
 ## Sampling strategies
 
     synthesize_trials(plan, 3, ~strategy: #\'iterate)   # the default
     synthesize_trials(plan, 3, ~strategy: #\'random)
+    synthesize_trials(plan, 3, ~constraints: [pin(0, 0, 0)])
+    check_sequence(plan, seq, ~constraints: [pin(0, 0, 0)])  # [] if sound
 
 `#\'iterate` solves the CNF, adds a clause forbidding that answer, and solves
 again. The sequences are distinct but not uniformly sampled -- you get

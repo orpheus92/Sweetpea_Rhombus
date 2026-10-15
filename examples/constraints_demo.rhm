@@ -1,0 +1,36 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+
+println("=== 1. unconstrained ===")
+let a = synthesize_trials(plan, 3, ~strategy: #'iterate, ~solver: S)
+for (s in a): println("  " ++ to_string(s))
+
+println("\n=== 2. the SAME design, excluding (size, small) at index 0 ===")
+println("    i.e. no trial may have size = small -- impossible under a full crossing")
+let ex = [exclude(1, 0)]
+let b = synthesize_trials(plan, 3, ~constraints: ex, ~strategy: #'iterate, ~solver: S)
+println("  sequences found: " ++ to_string(b.length()) ++ "  (correctly none)")
+
+println("\n=== 3. pin trial 0 to color=red ===")
+let pn = [pin(0, 0, 0)]
+let c = synthesize_trials(plan, 4, ~constraints: pn, ~strategy: #'iterate, ~solver: S)
+for (s in c): println("  " ++ to_string(s))
+
+println("\n=== 4. the checker, on the same constraints ===")
+for (s in c):
+  println("  " ++ to_string(check_sequence(plan, s, ~constraints: pn) == [])
+            ++ "  " ++ to_string(s[0]))
+println("  a hand-made violation:")
+let bad = [["blue","small"], ["red","large"], ["blue","large"], ["red","small"]]
+println("    " ++ to_string(check_sequence(plan, bad, ~constraints: pn)))

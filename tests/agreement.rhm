@@ -1,0 +1,56 @@
+#lang rhombus
+// The property SweetPea cannot state about itself: the encoder and the
+// checker agree, because both are derived from one declaration per
+// constraint. This is the test that would have caught Sequential.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+// 1. everything the SOLVER produces must satisfy the CHECKER
+let sat_seqs = synthesize_trials(plan, 24, ~strategy: #'iterate, ~solver: S)
+let all_pass:
+  for values(ok = #true) (s in sat_seqs):
+    ok && check_sequence(plan, s) == []
+report("every solver result passes the checker ("
+         ++ to_string(sat_seqs.length()) ++ " sequences)", all_pass)
+
+// 2. the same, with an extra constraint in play
+let pn = [pin(0, 0, 0)]
+let pinned = synthesize_trials(plan, 6, ~constraints: pn, ~strategy: #'iterate, ~solver: S)
+let pin_pass:
+  for values(ok = #true) (s in pinned):
+    ok && check_sequence(plan, s, ~constraints: pn) == [] && s[0][0] == "red"
+report("with pin(trial 0, color=red): solver obeys it and the checker agrees",
+       pin_pass)
+
+// 3. the same, via rejection sampling -- a different strategy, same reqs
+let rnd = synthesize_trials(plan, 50, ~constraints: pn, ~strategy: #'random)
+let rnd_pass:
+  for values(ok = #true) (s in rnd):
+    ok && check_sequence(plan, s, ~constraints: pn) == [] && s[0][0] == "red"
+report("#'random obeys the same constraint (50 draws)", rnd_pass)
+
+// 4. the checker must REJECT things, or it proves nothing
+let valid = sat_seqs[0]
+let swapped = List.cons(valid[1], List.cons(valid[0], valid.drop(2)))
+report("a sequence starting with the wrong colour is rejected by pin",
+       check_sequence(plan, swapped, ~constraints: pn) != [])
+let dup = [valid[0], valid[0], valid[0], valid[0]]
+report("a sequence repeating one combination is rejected by crossed",
+       check_sequence(plan, dup) != [])
+
+// 5. an unsatisfiable constraint yields nothing, rather than something wrong
+let impossible = synthesize_trials(plan, 3, ~constraints: [exclude(1, 0)],
+                                   ~strategy: #'iterate, ~solver: S)
+report("excluding a level needed by the crossing yields 0 sequences",
+       impossible.length() == 0)

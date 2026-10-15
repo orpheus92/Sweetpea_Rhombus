@@ -1,0 +1,129 @@
+#lang rhombus/and_meta
+
+// One declaration per constraint, two consumers.
+//
+// A constraint says, for a given design geometry, which *requirements* hold.
+// Every requirement has the same shape: of this set of atoms, between `lo`
+// and `hi` are true. There are two kinds of atom:
+//
+//   Lev(i, f, l)   trial i gives factor f its level l
+//   Comb(i, j)     trial i realises combination j
+//
+// From that single description:
+//   cnf_of    turns a requirement into clauses for the solver
+//   holds_in  checks a requirement against a finished trial sequence
+//
+// Both are written once, here, and shared by every constraint. A constraint
+// author writes neither an encoder nor a checker, so the two cannot drift
+// apart -- which is exactly the bug that sat in SweetPea's Sequential, where
+// constraint.py:1232 and :1487 had disagreed since May.
+
+export:
+  Lev
+  Comb
+  Req
+  Geom
+  Constraint
+  exactly
+  at_most
+  at_least
+  constraint
+  cnf_of
+  holds_in
+  consistent
+  crossed
+  exclude
+  pin
+
+class Lev(trial, factor, level)
+class Comb(trial, combo)
+class Req(atoms, lo, hi)
+class Geom(n_trials, factors, counts, combos)
+class Constraint(name, reqs)
+
+fun exactly(n, atoms):  Req(atoms, n, n)
+fun at_most(n, atoms):  Req(atoms, 0, n)
+fun at_least(n, atoms): Req(atoms, n, atoms.length())
+
+// `constraint name(args) ~given g: body`
+// The body builds a list of Reqs. `g` names the design geometry; you choose
+// the name, so there is no hygiene surprise.
+defn.macro 'constraint $name($arg, ...) ~given $g: $body':
+  let s = to_string(Syntax.unwrap(name))
+  'def $name = fun ($arg, ...):
+                 Constraint($s, fun ($g): $body)'
+
+// ------------------------------------------------ the two shared consumers
+fun pairwise_not_both(vs :: List) :: List:
+  let n = vs.length()
+  let nested:
+    for List (a in 0..n):
+      for List (b in (a+1)..n):
+        [- vs[a], - vs[b]]
+  List.append(& nested)
+
+fun lower_clauses(vs :: List, lo :: Int) :: List:
+  cond
+  | lo == 0: []
+  | lo == 1: [vs]
+  | ~else: error("cnf_of: lower bound " ++ to_string(lo)
+                   ++ " needs a counter encoding (not implemented)")
+
+fun upper_clauses(vs :: List, hi :: Int) :: List:
+  cond
+  | hi >= vs.length(): []
+  | hi == 0: vs.map(fun (v): [- v])
+  | hi == 1: pairwise_not_both(vs)
+  | ~else: error("cnf_of: upper bound " ++ to_string(hi)
+                   ++ " needs a counter encoding (not implemented)")
+
+fun cnf_of(req :: Req, var_of) :: List:
+  let vs = req.atoms.map(var_of)
+  lower_clauses(vs, req.lo) ++ upper_clauses(vs, req.hi)
+
+fun holds_in(req :: Req, is_set) :: Boolean:
+  let n:
+    for values(acc = 0) (a in req.atoms):
+      if is_set(a) | acc + 1 | acc
+  n >= req.lo && n <= req.hi
+
+// ----------------------------------------------------- built-in constraints
+
+// exactly one level of each factor on each trial
+constraint consistent() ~given geom:
+  let per:
+    for List (i in 0..geom.n_trials):
+      for List (fi in 0..geom.factors.length()):
+        let atoms:
+          for List (li in 0..geom.counts[fi]):
+            Lev(i, fi, li)
+        exactly(1, atoms)
+  List.append(& per)
+
+// every combination of the crossed factors appears exactly once,
+// and each trial realises exactly one combination
+constraint crossed() ~given geom:
+  let per_combo:
+    for List (j in 0..geom.combos.length()):
+      let atoms:
+        for List (i in 0..geom.n_trials):
+          Comb(i, j)
+      exactly(1, atoms)
+  let per_trial:
+    for List (i in 0..geom.n_trials):
+      let atoms:
+        for List (j in 0..geom.combos.length()):
+          Comb(i, j)
+      exactly(1, atoms)
+  per_combo ++ per_trial
+
+// a level that must never appear
+constraint exclude(fi, li) ~given geom:
+  let atoms:
+    for List (i in 0..geom.n_trials):
+      Lev(i, fi, li)
+  [at_most(0, atoms)]
+
+// a level pinned to a particular trial
+constraint pin(i, fi, li) ~given geom:
+  [at_least(1, [Lev(i, fi, li)])]
