@@ -1,0 +1,21 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+println("this design admits " ++ to_string(count_sequences(plan)) ++ " valid sequences\n")
+
+println("~strategy: #'iterate   (SAT solver, distinct but not uniform)")
+for (s in synthesize_trials(plan, 3, ~strategy: #'iterate,
+                            ~solver: "cryptominisat5")):
+  println("  " ++ to_string(s))
+
+println("\n~strategy: #'random    (exactly uniform, with replacement)")
+for (s in synthesize_trials(plan, 3, ~strategy: #'random)):
+  println("  " ++ to_string(s))

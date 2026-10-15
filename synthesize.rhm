@@ -5,6 +5,7 @@ import:
 
 export:
   synthesize_trials
+  count_sequences
   encode
 
 // ------------------------------------------------------------------ util
@@ -47,7 +48,7 @@ fun exactly_one(vars :: List) :: List:
 // DIMACS variables, 1-based:
 //   x(i,f,l)  trial i assigns factor f its level l
 //   c(i,j)    trial i realises combination j
-class Encoding(n_vars, clauses, n_trials, counts, base, width, factors)
+class Encoding(n_vars, clauses, n_trials, counts, base, width, factors, combos)
 
 fun encode(exp :: Experiment) :: Encoding:
   let facs = exp.design
@@ -113,7 +114,7 @@ fun encode(exp :: Experiment) :: Encoding:
 
   Encoding(c_offset + n_trials * n_trials,
            consistency ++ defines ++ crossing,
-           n_trials, counts, base, width, facs)
+           n_trials, counts, base, width, facs, combos)
 
 // --------------------------------------------------------------- DIMACS
 fun write_cnf(enc :: Encoding, extra :: List, path :: String) :: Void:
@@ -197,8 +198,50 @@ fun gather(enc, n, blocking, acc, solver, tmp):
       gather(enc, n - 1, List.add(blocking, block), List.add(acc, trial), solver, tmp)
     | acc
 
+// --------------------------------------------------- uniform enumeration
+// Within this pilot's scope -- plain factors, fully crossed, no other
+// constraints -- the valid sequences are exactly the orderings of the
+// combination list. So a uniformly random ordering is a uniformly random
+// valid sequence, and the number of them is T factorial. No solver needed.
+fun shuffle(lst :: List) :: List:
+  if lst.length() == 0
+  | []
+  | let i = math.random(lst.length())
+    List.cons(lst[i], shuffle(lst.take(i) ++ lst.drop(i + 1)))
+
+fun factorial(n :: Int) :: Int:
+  if n <= 1 | 1 | n * factorial(n - 1)
+
+fun as_trials(enc :: Encoding, order :: List) :: List:
+  for List (combo in order):
+    for List (fi in 0..enc.factors.length()):
+      enc.factors[fi].levels[combo[fi]]
+
+fun sample_uniformly(enc :: Encoding, n :: Int) :: List:
+  for List (k in 0..n):
+    as_trials(enc, shuffle(enc.combos))
+
+// How many distinct valid sequences this design admits.
+fun count_sequences(exp :: Experiment) :: Int:
+  factorial(encode(exp).n_trials)
+
+// ---------------------------------------------------------------- public
+// ~strategy:
+//   #'iterate  solve the CNF, forbid that answer, solve again.
+//               Distinct sequences, but NOT uniformly sampled -- you get
+//               whatever the solver happens to prefer. SweetPea calls this
+//               IterateSATGen.
+//   #'random   pick a uniformly random valid sequence, directly.
+//               Exactly uniform, and samples WITH replacement, so two
+//               draws may coincide. SweetPea calls this RandomGen.
 fun synthesize_trials(exp :: Experiment,
                       count :: Int = 1,
+                      ~strategy: strategy :: Symbol = #'iterate,
                       ~solver: solver :: String = "cryptominisat5",
                       ~tmp: tmp :: String = "/tmp/sp_r.cnf") :: List:
-  gather(encode(exp), count, [], [], solver, tmp)
+  let enc = encode(exp)
+  match strategy
+  | #'iterate: gather(enc, count, [], [], solver, tmp)
+  | #'random: sample_uniformly(enc, count)
+  | ~else: error("synthesize_trials: unknown ~strategy: " ++ to_string(strategy)
+                   ++ "\n  known strategies: #\'iterate, #\'random")

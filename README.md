@@ -71,10 +71,46 @@ Racket 9.3 or later, Rhombus, and a DIMACS SAT solver.
 
 ## Running it
 
-    racket examples/pilot.rhm     # generate trials
-    racket tests/verify.rhm       # check the trials are actually valid
-    racket examples/stroop.rhm    # the notation, including derived factors
-    tests/run-tests.sh            # designs that must FAIL to compile
+    racket examples/pilot.rhm      # generate trials
+    racket examples/strategies.rhm # the two sampling strategies side by side
+    racket examples/stroop.rhm     # the notation, including derived factors
+    racket tests/verify.rhm        # check the trials are actually valid
+    racket tests/uniformity.rhm    # check #\'random really is uniform
+    tests/run-tests.sh             # designs that must FAIL to compile
+
+## Sampling strategies
+
+    synthesize_trials(plan, 3, ~strategy: #\'iterate)   # the default
+    synthesize_trials(plan, 3, ~strategy: #\'random)
+
+`#\'iterate` solves the CNF, adds a clause forbidding that answer, and solves
+again. The sequences are distinct but not uniformly sampled -- you get
+whichever the solver prefers, and the same ones on every run. This is what
+SweetPea calls `IterateSATGen`.
+
+`#\'random` draws a uniformly random valid sequence directly, without a solver.
+Within this pilot's scope -- plain factors, fully crossed, no other
+constraints -- the valid sequences are exactly the orderings of the
+combination list, so a random ordering is a uniform draw. It samples WITH
+replacement, so two draws can coincide. This is SweetPea's `RandomGen`.
+
+`count_sequences(plan)` reports how many valid sequences a design admits.
+For a fully crossed design that is (number of combinations) factorial.
+
+Measured on a 2x2 design, 2400 draws over the 24 possible sequences:
+
+    every draw valid:        #true
+    distinct sequences seen: 24 of 24
+    chi-square (df=23):      18.56   (critical value at p=.05 is 35.17)
+    verdict: consistent with uniform
+
+    #\'iterate run twice -> identical
+    #\'random  run twice -> different
+
+CMSGen and UniGen are not implemented. Both are mostly a matter of invoking a
+different solver executable -- SweetPea's own code is `unigen_exe = CMSGEN_EXE
+if use_cmsgen else UNIGEN_EXE` plus a few flags -- so neither is deep work,
+but neither binary was available to test against.
 
 ## Why the checking matters
 
@@ -102,8 +138,8 @@ derived factors in the solver, `Nest`, `Merge` and weighted levels are not
 encoded — the notation parses derived factors, but `synthesize_trials` rejects
 them rather than quietly doing the wrong thing.
 
-Sampling is not uniform. Repeated calls add clauses forbidding the sequences
-already found and take whatever the solver returns next, which enumerates
-valid sequences but does not sample them evenly. SweetPea's `RandomGen` and
-`UniGen` exist precisely for that, and neither is implemented here. Uniformity
-matters for real experiments; this is a gap, not a design choice.
+Uniform sampling works only because the pilot has no constraints beyond the
+crossing. Once `Exclude` or `MinimumTrials` exist, the valid sequences are no
+longer just the orderings of the combination list, and `#\'random` would have
+to count solutions properly -- which is what SweetPea's `RandomGen` actually
+does, and is real work.

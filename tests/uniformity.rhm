@@ -1,0 +1,52 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let n_possible = count_sequences(plan)
+let n_draws = 2400
+println("design admits " ++ to_string(n_possible) ++ " sequences; drawing "
+          ++ to_string(n_draws) ++ " with ~strategy: #'random\n")
+
+let draws = synthesize_trials(plan, n_draws, ~strategy: #'random)
+
+// every draw must be a valid sequence
+let all_valid:
+  for values(ok = #true) (s in draws):
+    ok && s.length() == 4 && Set(& s).length() == 4
+println("every draw valid:        " ++ to_string(all_valid))
+println("distinct sequences seen: " ++ to_string(Set(& draws).length())
+          ++ " of " ++ to_string(n_possible))
+
+// chi-square against a flat expectation
+let counts:
+  for values(m = {}) (s in draws):
+    m ++ { s: (m.get(s, 0)) + 1 }
+let expected = n_draws / n_possible
+let chi2:
+  for values(acc = 0.0) (k in counts.keys()):
+    let d = counts[k] - expected
+    acc + (d * d) / expected
+println("expected per sequence:   " ++ to_string(expected))
+println("chi-square (df=" ++ to_string(n_possible - 1) ++ "):     "
+          ++ to_string(math.round(chi2 * 100.0) / 100.0))
+println("  critical value at p=.05 for df=23 is 35.17")
+println("  verdict: " ++ (if chi2 < 35.17
+                          | "consistent with uniform"
+                          | "NOT consistent with uniform"))
+
+// and the contrast: #'iterate is deterministic
+println("\n~strategy: #'iterate run twice:")
+let a = synthesize_trials(plan, 3, ~strategy: #'iterate, ~solver: "cryptominisat5")
+let b = synthesize_trials(plan, 3, ~strategy: #'iterate, ~solver: "cryptominisat5")
+println("  identical across runs: " ++ to_string(a == b) ++ "   (same answer every time)")
+let c = synthesize_trials(plan, 3, ~strategy: #'random)
+let d = synthesize_trials(plan, 3, ~strategy: #'random)
+println("~strategy: #'random run twice:")
+println("  identical across runs: " ++ to_string(c == d))
