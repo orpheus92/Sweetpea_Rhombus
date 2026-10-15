@@ -1,0 +1,39 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+// THE design that broke SweetPea: 3 sessions, 2-trial inner block.
+// n = 3 levels, S = 2 trials per segment, so S mod n = 2, not 1.
+// In SweetPea, RandomGen returns s1, s3, s2 here and reports success,
+// because its checker computes the segment index differently from its
+// encoder. Both strategies below read one declaration.
+factor color:   ["red", "blue"]
+factor session: ["s1", "s2", "s3"]
+
+experiment plan:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+let sq = [sequential(1)]
+println("n = 3 session levels, S = " ++ to_string(g.seg_len)
+          ++ " trials per segment, S mod n = " ++ to_string(g.seg_len mod 3)
+          ++ "   <- the broken regime\n")
+
+fun order(s): for List (t in s): t[1]
+println("#'iterate (SAT):")
+for (s in synthesize_trials(plan, 2, ~constraints: sq, ~strategy: #'iterate, ~solver: S)):
+  println("   " ++ to_string(order(s)))
+println("#'random (rejection sampling):")
+for (s in synthesize_trials(plan, 3, ~constraints: sq, ~strategy: #'random)):
+  println("   " ++ to_string(order(s)))
+
+// properly crossed, but the sessions are in the order SweetPea returns
+let wrong = [["red","s1"], ["blue","s1"], ["red","s3"], ["blue","s3"],
+             ["red","s2"], ["blue","s2"]]
+println("\nthe sequence SweetPea's RandomGen returns here, s1,s3,s2:")
+println("   checker says: " ++ to_string(check_sequence(plan, wrong, ~constraints: sq)))

@@ -1,0 +1,23 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor size:    ["small", "large"]
+factor session: ["s1", "s2"]
+
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+  ~within: session
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+println("trials = " ++ to_string(g.n_trials) ++ ", segment = "
+          ++ to_string(g.seg_len) ++ ", sustain = " ++ to_string(g.sustain) ++ "\n")
+for (s in synthesize_trials(plan, 2, ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(for List (t in s): t[2]))
+  for (t in s): println("      " ++ to_string(t))
+  println("")

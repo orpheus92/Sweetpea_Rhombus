@@ -21,6 +21,7 @@
 export:
   Lev
   Comb
+  Not
   Req
   Geom
   Constraint
@@ -35,11 +36,18 @@ export:
   exclude
   pin
   no_repeats
+  sustained
+  outer_crossed
+  sequential
 
 class Lev(trial, factor, level)
 class Comb(trial, combo)
+// A negated atom. Atoms are literals, so a requirement can say things like
+// "at most one of (a, not b)", which is the clause (not a or b) -- an
+// implication. Needed for sustain: a factor held constant over a segment.
+class Not(atom)
 class Req(atoms, lo, hi)
-class Geom(n_trials, factors, counts, combos, cross_idx)
+class Geom(n_trials, factors, counts, combos, cross_idx, seg_len, sustain)
 class Constraint(name, reqs)
 
 fun exactly(n, atoms):  Req(atoms, n, n)
@@ -78,14 +86,24 @@ fun upper_clauses(vs :: List, hi :: Int) :: List:
   | ~else: error("cnf_of: upper bound " ++ to_string(hi)
                    ++ " needs a counter encoding (not implemented)")
 
+fun lit_var(a, var_of):
+  match a
+  | Not(inner): - var_of(inner)
+  | ~else: var_of(a)
+
+fun lit_true(a, is_set):
+  match a
+  | Not(inner): !is_set(inner)
+  | ~else: is_set(a)
+
 fun cnf_of(req :: Req, var_of) :: List:
-  let vs = req.atoms.map(var_of)
+  let vs = req.atoms.map(fun (a): lit_var(a, var_of))
   lower_clauses(vs, req.lo) ++ upper_clauses(vs, req.hi)
 
 fun holds_in(req :: Req, is_set) :: Boolean:
   let n:
     for values(acc = 0) (a in req.atoms):
-      if is_set(a) | acc + 1 | acc
+      if lit_true(a, is_set) | acc + 1 | acc
   n >= req.lo && n <= req.hi
 
 // ----------------------------------------------------- built-in constraints
@@ -103,13 +121,21 @@ constraint consistent() ~given geom:
 
 // every combination of the crossed factors appears exactly once,
 // and each trial realises exactly one combination
+// Every combination of the crossed factors appears exactly once *within
+// each segment*. Without nesting there is one segment covering all trials,
+// so this is the same as before; with `~within` each instance of the inner
+// block is balanced on its own.
 constraint crossed() ~given geom:
+  let n_seg = geom.n_trials / geom.seg_len
   let per_combo:
-    for List (j in 0..geom.combos.length()):
-      let atoms:
-        for List (i in 0..geom.n_trials):
-          Comb(i, j)
-      exactly(1, atoms)
+    let nested:
+      for List (s in 0..n_seg):
+        for List (j in 0..geom.combos.length()):
+          let atoms:
+            for List (k in 0..geom.seg_len):
+              Comb(s * geom.seg_len + k, j)
+          exactly(1, atoms)
+    List.append(& nested)
   let per_trial:
     for List (i in 0..geom.n_trials):
       let atoms:
@@ -143,3 +169,48 @@ constraint no_repeats(fi) ~given geom:
       for List (i in 0..(geom.n_trials - 1)):
         at_most(1, [Lev(i, fi, li), Lev(i + 1, fi, li)])
   List.append(& nested)
+
+// A factor whose level is held constant across each segment. Expressed as
+// an equivalence between the segment's first trial and each later one:
+//   a -> b   is   at_most(1, [a, Not(b)])
+// so an equivalence is two of those. No new machinery: cnf_of and holds_in
+// handle it because atoms are literals.
+constraint sustained(fi) ~given geom:
+  let n_seg = geom.n_trials / geom.seg_len
+  let nested:
+    for List (s in 0..n_seg):
+      let first = s * geom.seg_len
+      let per_k:
+        for List (k in 1..geom.seg_len):
+          let i = first + k
+          let per_l:
+            for List (li in 0..geom.counts[fi]):
+              [at_most(1, [Lev(first, fi, li), Not(Lev(i, fi, li))]),
+               at_most(1, [Lev(i, fi, li), Not(Lev(first, fi, li))])]
+          List.append(& per_l)
+      List.append(& per_k)
+  List.append(& nested)
+
+// Each level of the outer factor is used by exactly one segment.
+constraint outer_crossed(fi) ~given geom:
+  let n_seg = geom.n_trials / geom.seg_len
+  for List (li in 0..geom.counts[fi]):
+    let atoms:
+      for List (s in 0..n_seg):
+        Lev(s * geom.seg_len, fi, li)
+    exactly(1, atoms)
+
+// The levels of a sustained factor appear in declaration order, one per
+// segment, wrapping around. This is SweetPea's `Sequential`.
+//
+// Note what is NOT here: any statement of what a checker should verify.
+// "segment s carries level s mod n" is written once. SweetPea wrote it
+// twice -- constraint.py:1232 computes the segment index by dividing the
+// trial index by the segment length, and :1487 forgot to divide -- and the
+// two disagreed for months, with RandomGen silently returning the levels in
+// the wrong order. That divergence has nowhere to live here.
+constraint sequential(fi) ~given geom:
+  let n_seg = geom.n_trials / geom.seg_len
+  let n = geom.counts[fi]
+  for List (s in 0..n_seg):
+    at_least(1, [Lev(s * geom.seg_len, fi, s mod n)])

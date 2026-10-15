@@ -46,8 +46,20 @@ fun geometry_of(exp :: Experiment) :: Geom:
   when cross_idx.length() == 0
   | error("synthesize_trials: ~cross is empty")
   let cross_counts = for List (fi in cross_idx): counts[fi]
-  Geom(product(cross_counts), exp.design, counts,
-       combinations(cross_counts), cross_idx)
+  let inner_trials = product(cross_counts)
+  if !exp.within
+  | Geom(inner_trials, exp.design, counts, combinations(cross_counts),
+         cross_idx, inner_trials,
+         for List (fi in 0..exp.design.length()): 1)
+  | // the ~within factor joins the design at the end, held constant
+    // across each instance of the inner block
+    let facs = List.add(exp.design, exp.within)
+    let cs = List.add(counts, exp.within.levels.length())
+    let n_seg = exp.within.levels.length()
+    let sustain:
+      List.add(for List (fi in 0..exp.design.length()): 1, inner_trials)
+    Geom(inner_trials * n_seg, facs, cs, combinations(cross_counts),
+         cross_idx, inner_trials, sustain)
 
 // Variable numbering. Lev atoms come first, then Comb atoms.
 fun numbering(geom :: Geom):
@@ -84,8 +96,18 @@ fun comb_definition(geom :: Geom, var_of) :: List:
   List.append(& nested)
 
 // Every constraint in play, built-ins first.
+// The constraints every design gets, plus any the user supplied.
+fun builtins(geom :: Geom) :: List:
+  let base = [consistent(), crossed()]
+  let nested:
+    for values(acc = base) (fi in 0..geom.factors.length()):
+      if geom.sustain[fi] > 1
+      | acc ++ [sustained(fi), outer_crossed(fi)]
+      | acc
+  nested
+
 fun all_reqs(geom :: Geom, extra :: List) :: List:
-  let cs = List.cons(consistent(), List.cons(crossed(), extra))
+  let cs = builtins(geom) ++ extra
   let nested:
     for List (c in cs):
       (c.reqs)(geom)
@@ -170,7 +192,7 @@ fun check_sequence(exp :: Experiment, seq :: List,
                    ~constraints: extra :: List = []) :: List:
   let geom = geometry_of(exp)
   let is_set = checker_for(geom, seq)
-  let cs = List.cons(consistent(), List.cons(crossed(), extra))
+  let cs = builtins(geom) ++ extra
   let bad:
     for values(acc = []) (c in cs):
       let rs = (c.reqs)(geom)
@@ -205,31 +227,44 @@ fun shuffle(lst :: List) :: List:
   | let i = math.random(lst.length())
     List.cons(lst[i], shuffle(lst.take(i) ++ lst.drop(i + 1)))
 
-// Build a candidate: the crossed factors follow `order`; any factor in
-// ~design but not in ~cross gets a random level, since it is unconstrained
-// by the crossing.
-fun as_seq(geom :: Geom, order :: List) :: List:
-  for List (t in 0..order.length()):
-    let combo = order[t]
-    for List (fi in 0..geom.factors.length()):
-      let k:
-        for values(found = -1) (m in 0..geom.cross_idx.length()):
-          if geom.cross_idx[m] == fi | m | found
-      if k >= 0
-      | geom.factors[fi].levels[combo[k]]
-      | geom.factors[fi].levels[math.random(geom.counts[fi])]
+// Build a candidate sequence. Crossed factors get a fresh random ordering
+// of the combinations within each segment; a sustained factor gets one level
+// per segment (a random permutation of its levels); anything else in the
+// design but not crossed gets an independent random level per trial.
+fun propose(geom :: Geom) :: List:
+  let n_seg = geom.n_trials / geom.seg_len
+  let sustained_idx:
+    for values(acc = []) (fi in 0..geom.factors.length()):
+      if geom.sustain[fi] > 1 | List.add(acc, fi) | acc
+  // one level per segment for each sustained factor
+  let seg_levels:
+    for List (fi in sustained_idx):
+      shuffle(for List (li in 0..geom.counts[fi]): li)
+  let nested:
+    for List (s in 0..n_seg):
+      let order = shuffle(geom.combos)
+      for List (k in 0..geom.seg_len):
+        let combo = order[k]
+        for List (fi in 0..geom.factors.length()):
+          let ci:
+            for values(found = -1) (m in 0..geom.cross_idx.length()):
+              if geom.cross_idx[m] == fi | m | found
+          let si:
+            for values(found = -1) (m in 0..sustained_idx.length()):
+              if sustained_idx[m] == fi | m | found
+          cond
+          | ci >= 0: geom.factors[fi].levels[combo[ci]]
+          | si >= 0: geom.factors[fi].levels[seg_levels[si][s]]
+          | ~else: geom.factors[fi].levels[math.random(geom.counts[fi])]
+  List.append(& nested)
 
-// Rejection sampling: propose a random ordering, keep it only if the
-// checker -- the same requirements the solver was given -- accepts it.
-// This is how SweetPea's RandomGen works, and it means the two strategies
-// are answering the same question by different means.
 fun sample_uniformly(exp, geom, extra, n, tries_left):
   if n == 0
   | []
   | if tries_left == 0
-    | error("synthesize_trials: #'random gave up after many rejections;"
+    | error("synthesize_trials: #\'random gave up after many rejections;"
               ++ " the constraints may be too tight for rejection sampling")
-    | let cand = as_seq(geom, shuffle(geom.combos))
+    | let cand = propose(geom)
       if check_sequence(exp, cand, ~constraints: extra) == []
       | List.cons(cand, sample_uniformly(exp, geom, extra, n - 1, 10000))
       | sample_uniformly(exp, geom, extra, n, tries_left - 1)

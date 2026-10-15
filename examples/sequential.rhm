@@ -1,0 +1,34 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor size:    ["small", "large"]
+factor session: ["s1", "s2", "s3"]
+
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+  ~within: session
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+let sq = [sequential(2)]        // session is design position 2
+println("3 sessions x 4-trial inner block = " ++ to_string(g.n_trials) ++ " trials")
+println("sequential(session): sessions must run s1, s2, s3 in that order\n")
+
+println("~strategy: #'iterate")
+for (s in synthesize_trials(plan, 2, ~constraints: sq, ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(for List (t in s): t[2]))
+
+println("\n~strategy: #'random  (rejection sampling, same declaration)")
+for (s in synthesize_trials(plan, 3, ~constraints: sq, ~strategy: #'random)):
+  println("  " ++ to_string(for List (t in s): t[2]))
+
+println("\nchecker on a WRONG order s1,s3,s2:")
+let bad:
+  for List (s in ["s1","s1","s1","s1","s3","s3","s3","s3","s2","s2","s2","s2"]):
+    ["red", "small", s]
+println("  " ++ to_string(check_sequence(plan, bad, ~constraints: sq)))

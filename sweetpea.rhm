@@ -3,9 +3,8 @@
 // A Rhombus front end for SweetPea experiment designs.
 //
 // Covers the `factor` and `experiment` forms from Figure 2 of the
-// PESOSE/Rhombus proposal. There is no solver here: this layer builds a
-// design and checks it at COMPILE time. Sampling stays in the Python
-// SweetPea library.
+// PESOSE/Rhombus proposal. No solver: this layer produces a design and
+// checks it. Sampling stays in the Python SweetPea library.
 
 export:
   Factor
@@ -16,16 +15,15 @@ export:
 
 class Factor(name, levels, params)
 class DerivedLevel(name, arity, predicate)
-class Experiment(name, design, cross, constraints)
+class Experiment(name, design, cross, constraints, within)
 
 meta:
   fun id_string(stx): to_string(Syntax.unwrap(stx))
 
 defn.macro
-// A derived factor, parameterized over other factors:
-//   factor congruency(color, word):
-//     [derived con(a, b): a == b,
-//      derived inc(a, b): a != b]
+// factor congruency(color, word):
+//   [derived con(a, b): a == b,
+//    derived inc(a, b): a != b]
 | 'factor $name($fac, ...): [$lvl, ...]':
     let s = id_string(name)
     let arity = [fac, ...].length()
@@ -43,8 +41,7 @@ defn.macro
             error("factor " +& s +& ": expected a `derived` clause")
     'def $name = Factor($s, [$(each lvls), ...], [$fac, ...])'
 
-// A plain factor:
-//   factor color: ["red", "blue"]
+// factor color: ["red", "blue"]
 | 'factor $name: $levels':
     'def $name = Factor($(id_string(name)), $levels, [])'
 
@@ -52,7 +49,7 @@ defn.macro
 // experiment plan:
 //   ~design: [color, word, congruency]
 //   ~cross: [color, congruency]
-//   ~constraints: [...]
+//   ~constraints: [MinimumTrials(30)]
 | 'experiment $name:
      ~design: [$d, ...]
      ~cross: [$c, ...]
@@ -63,7 +60,33 @@ defn.macro
       when !(design_names.contains(id_string(f)))
       | error("experiment " +& s +& ": `" +& id_string(f)
                 +& "` appears in ~cross but not in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons)'
+    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, #false)'
+
+| 'experiment $name:
+     ~design: [$d, ...]
+     ~cross: [$c, ...]
+     ~within: $w
+     ~constraints: $cons':
+    let s = id_string(name)
+    let design_names = for List (f in [d, ...]): id_string(f)
+    for (f in [c, ...]):
+      when !(design_names.contains(id_string(f)))
+      | error("experiment " ++ s ++ ": `" ++ id_string(f)
+                ++ "` appears in ~cross but not in ~design")
+    when design_names.contains(id_string(w))
+    | error("experiment " ++ s ++ ": `" ++ id_string(w)
+              ++ "` is the ~within factor, so it must not also be in ~design")
+    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w)'
+
+| 'experiment $name:
+     ~design: [$d, ...]
+     ~cross: [$c, ...]
+     ~within: $w':
+    'experiment $name:
+       ~design: [$d, ...]
+       ~cross: [$c, ...]
+       ~within: $w
+       ~constraints: []'
 
 | 'experiment $name:
      ~design: [$d, ...]
