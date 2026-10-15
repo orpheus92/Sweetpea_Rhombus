@@ -1,0 +1,22 @@
+#lang rhombus
+// Figure 2 of the PESOSE/Rhombus proposal, as a running program.
+import: "../sweetpea.rhm" open
+
+factor color: ["red", "blue", "yellow", "brown"]
+factor word:  ["red", "blue", "yellow", "brown"]
+
+factor congruency(color, word):
+  [derived con(a_color, a_word): a_color == a_word,
+   derived inc(a_color, a_word): a_color != a_word]
+
+experiment plan:
+  ~design: [color, word, congruency]
+  ~cross: [color, congruency]
+  ~constraints: ["MinimumTrials(30)"]
+
+println(plan.name)
+println("  design:      " ++ to_string(for List (f in plan.design): f.name))
+println("  cross:       " ++ to_string(for List (f in plan.cross): f.name))
+println("  constraints: " ++ to_string(plan.constraints))
+println("  con(red,red) = "
+          ++ to_string(congruency.levels[0].predicate("red", "red")))

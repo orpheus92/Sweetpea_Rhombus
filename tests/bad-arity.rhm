@@ -1,0 +1,11 @@
+#lang rhombus
+// EXPECTED TO FAIL AT COMPILE TIME:
+//   factor congruency: derived level `con` takes 1 parameter(s), but
+//   congruency is parameterized over 2 factor(s)
+import: "../sweetpea.rhm" open
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+fun never_called():
+  factor congruency(color, word):
+    [derived con(a): a == a]
+  congruency

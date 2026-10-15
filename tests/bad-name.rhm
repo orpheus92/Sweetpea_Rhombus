@@ -1,0 +1,12 @@
+#lang rhombus
+// EXPECTED TO FAIL AT COMPILE TIME:
+//   experiment plan: `colour` appears in ~cross but not in ~design
+// Note the error comes from a function that is never called.
+import: "../sweetpea.rhm" open
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+fun never_called():
+  experiment plan:
+    ~design: [color, word]
+    ~cross: [colour]
+  plan
