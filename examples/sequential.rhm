@@ -15,7 +15,7 @@ experiment plan:
 
 let S = "cryptominisat5"
 let g = geometry_of(plan)
-let sq = [sequential(2)]        // session is design position 2
+let sq = [sequential(session)]        // session is design position 2
 println("3 sessions x 4-trial inner block = " ++ to_string(g.n_trials) ++ " trials")
 println("sequential(session): sessions must run s1, s2, s3 in that order\n")
 

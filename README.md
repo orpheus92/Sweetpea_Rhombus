@@ -123,8 +123,7 @@ Expect three four-trial sequences. If that works, everything is installed.
     experiment plan:
       ~design: [color, size]                 // everything in a trial
       ~cross: [color, size]                  // what must be balanced
-      ~within: session                       // repeat the above per session
-      ~constraints: [sequential(2)]
+      ~within: session ~in_order             // repeat per session, in order
 
 `~design` may be wider than `~cross`: a factor in the design but not the
 crossing varies freely. `~within` is optional; it holds a factor constant
@@ -143,15 +142,24 @@ across each instance of the inner design, which is SweetPea's `Nest`.
 
     consistent()        one level per factor per trial        (automatic)
     crossed()           each combination once per segment     (automatic)
-    sustained(fi)       held constant across a segment        (automatic with ~within)
-    outer_crossed(fi)   each segment gets a distinct level    (automatic with ~within)
-    exclude(fi, li)     a level that never appears
-    pin(i, fi, li)      a level fixed to a trial
-    no_repeats(fi)      no two adjacent trials share a level  (AtMostKInARow, k=1)
-    sequential(fi)      segments run in declaration order     (SweetPea's Sequential)
+    sustained(f)        held constant across a segment        (automatic with ~within)
+    outer_crossed(f)    each segment gets a distinct level    (automatic with ~within)
+    exclude(f, level)   a level that never appears
+    pin(i, f, level)    a level fixed to a trial
+    no_repeats(f)       no two adjacent trials share a level  (AtMostKInARow, k=1)
 
-Factors are referred to by position in `~design`, counting the `~within`
-factor last. Names would be friendlier and are an obvious next change.
+Constraints name factors and levels directly -- `no_repeats(color)`,
+`exclude(size, "small")` -- so a design never mentions an index.
+
+`sequential` is no longer written as a constraint. Ordering the segments is a
+property of the design, so it is stated there:
+
+    ~within: session ~in_order
+
+which is SweetPea's `Sequential`. The same split applies in principle to
+`exclude` and `pin`: both attach to the design rather than relating trials to
+one another, and both would read better as keywords. `no_repeats` is a
+genuine constraint, since it constrains trials relative to each other.
 
 ## Sampling strategies
 
@@ -228,7 +236,8 @@ Two strategies, two independent code paths, one declaration.
     racket examples/pilot.rhm             generate trials
     racket examples/strategies.rhm        the two sampling strategies
     racket examples/nesting.rhm           ~within
-    racket examples/sequential.rhm        sequential inside a nest
+    racket examples/sequential.rhm        ordering inside a nest
+    racket examples/design_keywords.rhm   ~in_order, and constraints by name
     racket examples/design_vs_cross.rhm   design wider than crossing
     racket examples/windows.rhm           no_repeats
     racket examples/constraints_demo.rhm  constraints and the checker

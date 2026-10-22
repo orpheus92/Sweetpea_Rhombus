@@ -1,0 +1,35 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor session: ["s1", "s2", "s3"]
+
+// The design that broke SweetPea, now stated in the design itself.
+experiment plan:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session ~in_order
+
+let S = "cryptominisat5"
+println("~within: session ~in_order   (no constraint list at all)\n")
+for (s in synthesize_trials(plan, 2, ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(for List (t in s): t[1]))
+for (s in synthesize_trials(plan, 2, ~strategy: #'random)):
+  println("  " ++ to_string(for List (t in s): t[1]))
+
+let wrong = [["red","s1"], ["blue","s1"], ["red","s3"], ["blue","s3"],
+             ["red","s2"], ["blue","s2"]]
+println("\nchecker on s1,s3,s2: " ++ to_string(check_sequence(plan, wrong)))
+
+// and constraints that remain constraints now name their factors
+println("\nconstraints by name, not index:")
+experiment plan2:
+  ~design: [color, session]
+  ~cross: [color, session]
+println("  no_repeats(color), pin(0, color, \"red\"), exclude(session, \"s3\")")
+let cs = [no_repeats(color), pin(0, color, "red")]
+for (s in synthesize_trials(plan2, 2, ~constraints: cs, ~strategy: #'iterate, ~solver: S)):
+  println("    " ++ to_string(for List (t in s): t[0] ++ "/" ++ t[1]))

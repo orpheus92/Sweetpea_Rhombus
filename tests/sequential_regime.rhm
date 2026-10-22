@@ -19,7 +19,7 @@ experiment plan:
 
 let S = "cryptominisat5"
 let g = geometry_of(plan)
-let sq = [sequential(1)]
+let sq = [sequential(session)]
 println("n = 3 session levels, S = " ++ to_string(g.seg_len)
           ++ " trials per segment, S mod n = " ++ to_string(g.seg_len mod 3)
           ++ "   <- the broken regime\n")

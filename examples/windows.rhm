@@ -11,7 +11,7 @@ experiment plan:
   ~cross: [color, size]
 
 let S = "cryptominisat5"
-let nr = [no_repeats(0)]            // colour must not repeat on adjacent trials
+let nr = [no_repeats(color)]            // colour must not repeat on adjacent trials
 
 println("6 trials, colour x size, no colour twice in a row\n")
 let seqs = synthesize_trials(plan, 3, ~constraints: nr, ~strategy: #'iterate, ~solver: S)

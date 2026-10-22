@@ -15,7 +15,7 @@ export:
 
 class Factor(name, levels, params)
 class DerivedLevel(name, arity, predicate)
-class Experiment(name, design, cross, constraints, within)
+class Experiment(name, design, cross, constraints, within, in_order)
 
 meta:
   fun id_string(stx): to_string(Syntax.unwrap(stx))
@@ -60,7 +60,30 @@ defn.macro
       when !(design_names.contains(id_string(f)))
       | error("experiment " +& s +& ": `" +& id_string(f)
                 +& "` appears in ~cross but not in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, #false)'
+    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, #false, #false)'
+
+| 'experiment $name:
+     ~design: [$d, ...]
+     ~cross: [$c, ...]
+     ~within: $w ~in_order
+     ~constraints: $cons':
+    let s = id_string(name)
+    let design_names = for List (f in [d, ...]): id_string(f)
+    for (f in [c, ...]):
+      when !(design_names.contains(id_string(f)))
+      | error("experiment " ++ s ++ ": `" ++ id_string(f)
+                ++ "` appears in ~cross but not in ~design")
+    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w, #true)'
+
+| 'experiment $name:
+     ~design: [$d, ...]
+     ~cross: [$c, ...]
+     ~within: $w ~in_order':
+    'experiment $name:
+       ~design: [$d, ...]
+       ~cross: [$c, ...]
+       ~within: $w ~in_order
+       ~constraints: []'
 
 | 'experiment $name:
      ~design: [$d, ...]
@@ -76,7 +99,7 @@ defn.macro
     when design_names.contains(id_string(w))
     | error("experiment " ++ s ++ ": `" ++ id_string(w)
               ++ "` is the ~within factor, so it must not also be in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w)'
+    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w, #false)'
 
 | 'experiment $name:
      ~design: [$d, ...]

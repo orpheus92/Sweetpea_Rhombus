@@ -39,6 +39,8 @@ export:
   sustained
   outer_crossed
   sequential
+  index_of_factor
+  index_of_level
 
 class Lev(trial, factor, level)
 class Comb(trial, combo)
@@ -49,6 +51,27 @@ class Not(atom)
 class Req(atoms, lo, hi)
 class Geom(n_trials, factors, counts, combos, cross_idx, seg_len, sustain)
 class Constraint(name, reqs)
+
+// Constraints name factors and levels directly; these resolve a name to
+// the position the encoding uses. Writing `no_repeats(color)` rather than
+// `no_repeats(0)` keeps a design readable and keeps index arithmetic out
+// of user code.
+fun index_of_factor(geom, f) :: Int:
+  let i:
+    for values(found = -1) (k in 0..geom.factors.length()):
+      if geom.factors[k].name == f.name | k | found
+  when i < 0
+  | error("constraint: factor `" ++ f.name ++ "` is not in this design")
+  i
+
+fun index_of_level(geom, fi, lvl) :: Int:
+  let i:
+    for values(found = -1) (k in 0..geom.counts[fi]):
+      if geom.factors[fi].levels[k] == lvl | k | found
+  when i < 0
+  | error("constraint: factor `" ++ geom.factors[fi].name
+            ++ "` has no level " ++ to_string(lvl))
+  i
 
 fun exactly(n, atoms):  Req(atoms, n, n)
 fun at_most(n, atoms):  Req(atoms, 0, n)
@@ -149,21 +172,25 @@ constraint crossed() ~given geom:
 // `consistent` -- one level per trial -- but are otherwise free.
 
 // a level that must never appear
-constraint exclude(fi, li) ~given geom:
+constraint exclude(f, lvl) ~given geom:
+  let fi = index_of_factor(geom, f)
+  let li = index_of_level(geom, fi, lvl)
   let atoms:
     for List (i in 0..geom.n_trials):
       Lev(i, fi, li)
   [at_most(0, atoms)]
 
 // a level pinned to a particular trial
-constraint pin(i, fi, li) ~given geom:
-  [at_least(1, [Lev(i, fi, li)])]
+constraint pin(i, f, lvl) ~given geom:
+  let fi = index_of_factor(geom, f)
+  [at_least(1, [Lev(i, fi, index_of_level(geom, fi, lvl))])]
 
 // No two consecutive trials share a level of factor `fi`.
 // This is AtMostKInARow with k = 1: over each window of two adjacent
 // trials, at most one carries the level. Note that nothing in cnf_of or
 // holds_in changed to support it -- a window is just another set of atoms.
-constraint no_repeats(fi) ~given geom:
+constraint no_repeats(f) ~given geom:
+  let fi = index_of_factor(geom, f)
   let nested:
     for List (li in 0..geom.counts[fi]):
       for List (i in 0..(geom.n_trials - 1)):
@@ -175,7 +202,8 @@ constraint no_repeats(fi) ~given geom:
 //   a -> b   is   at_most(1, [a, Not(b)])
 // so an equivalence is two of those. No new machinery: cnf_of and holds_in
 // handle it because atoms are literals.
-constraint sustained(fi) ~given geom:
+constraint sustained(f) ~given geom:
+  let fi = index_of_factor(geom, f)
   let n_seg = geom.n_trials / geom.seg_len
   let nested:
     for List (s in 0..n_seg):
@@ -192,7 +220,8 @@ constraint sustained(fi) ~given geom:
   List.append(& nested)
 
 // Each level of the outer factor is used by exactly one segment.
-constraint outer_crossed(fi) ~given geom:
+constraint outer_crossed(f) ~given geom:
+  let fi = index_of_factor(geom, f)
   let n_seg = geom.n_trials / geom.seg_len
   for List (li in 0..geom.counts[fi]):
     let atoms:
@@ -209,7 +238,8 @@ constraint outer_crossed(fi) ~given geom:
 // trial index by the segment length, and :1487 forgot to divide -- and the
 // two disagreed for months, with RandomGen silently returning the levels in
 // the wrong order. That divergence has nowhere to live here.
-constraint sequential(fi) ~given geom:
+constraint sequential(f) ~given geom:
+  let fi = index_of_factor(geom, f)
   let n_seg = geom.n_trials / geom.seg_len
   let n = geom.counts[fi]
   for List (s in 0..n_seg):

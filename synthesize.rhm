@@ -97,17 +97,19 @@ fun comb_definition(geom :: Geom, var_of) :: List:
 
 // Every constraint in play, built-ins first.
 // The constraints every design gets, plus any the user supplied.
-fun builtins(geom :: Geom) :: List:
+fun builtins(geom :: Geom, ~in_order: in_order = #false) :: List:
   let base = [consistent(), crossed()]
   let nested:
     for values(acc = base) (fi in 0..geom.factors.length()):
       if geom.sustain[fi] > 1
-      | acc ++ [sustained(fi), outer_crossed(fi)]
+      | let f = geom.factors[fi]
+        let core = acc ++ [sustained(f), outer_crossed(f)]
+        if in_order | core ++ [sequential(f)] | core
       | acc
   nested
 
-fun all_reqs(geom :: Geom, extra :: List) :: List:
-  let cs = builtins(geom) ++ extra
+fun all_reqs(geom :: Geom, exp, extra :: List) :: List:
+  let cs = builtins(geom, ~in_order: exp.in_order) ++ extra
   let nested:
     for List (c in cs):
       (c.reqs)(geom)
@@ -192,7 +194,7 @@ fun check_sequence(exp :: Experiment, seq :: List,
                    ~constraints: extra :: List = []) :: List:
   let geom = geometry_of(exp)
   let is_set = checker_for(geom, seq)
-  let cs = builtins(geom) ++ extra
+  let cs = builtins(geom, ~in_order: exp.in_order) ++ extra
   let bad:
     for values(acc = []) (c in cs):
       let rs = (c.reqs)(geom)
@@ -281,7 +283,7 @@ fun synthesize_trials(exp :: Experiment,
                       ~tmp: tmp :: String = "/tmp/sp_r.cnf") :: List:
   let geom = geometry_of(exp)
   let (var_of, n_vars, width, base) = numbering(geom)
-  let reqs = all_reqs(geom, extra)
+  let reqs = all_reqs(geom, exp, extra)
   match strategy
   | #'iterate: gather(geom, var_of, n_vars, reqs, count, [], [], solver, tmp)
   | #'random: sample_uniformly(exp, geom, extra, count, 10000)

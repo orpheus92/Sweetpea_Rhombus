@@ -36,6 +36,6 @@ fun show(c, seq):
   println("  holds_in on " ++ to_string(seq[0]) ++ "... -> " ++ to_string(verdict))
 
 let seq = [["red","large"], ["blue","large"], ["blue","small"], ["red","small"]]
-show(pin(0, 0, 0), seq)
-show(exclude(1, 0), seq)
+show(pin(0, color, "red"), seq)
+show(exclude(size, "small"), seq)
 show(consistent(), seq)

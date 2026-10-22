@@ -25,7 +25,7 @@ report("every solver result passes the checker ("
          ++ to_string(sat_seqs.length()) ++ " sequences)", all_pass)
 
 // 2. the same, with an extra constraint in play
-let pn = [pin(0, 0, 0)]
+let pn = [pin(0, color, "red")]
 let pinned = synthesize_trials(plan, 6, ~constraints: pn, ~strategy: #'iterate, ~solver: S)
 let pin_pass:
   for values(ok = #true) (s in pinned):
@@ -50,7 +50,7 @@ report("a sequence repeating one combination is rejected by crossed",
        check_sequence(plan, dup) != [])
 
 // 5. an unsatisfiable constraint yields nothing, rather than something wrong
-let impossible = synthesize_trials(plan, 3, ~constraints: [exclude(1, 0)],
+let impossible = synthesize_trials(plan, 3, ~constraints: [exclude(size, "small")],
                                    ~strategy: #'iterate, ~solver: S)
 report("excluding a level needed by the crossing yields 0 sequences",
        impossible.length() == 0)
