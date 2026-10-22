@@ -146,7 +146,9 @@ across each instance of the inner design, which is SweetPea's `Nest`.
     outer_crossed(f)    each segment gets a distinct level    (automatic with ~within)
     exclude(f, level)   a level that never appears
     pin(i, f, level)    a level fixed to a trial
-    no_repeats(f)       no two adjacent trials share a level  (AtMostKInARow, k=1)
+    no_repeats(f)             no two adjacent trials share a level
+    at_most_k_in_a_row(k, f)  AtMostKInARow, any k
+    exactly_k(k, f, level)    exactly k trials carry this level
 
 Constraints name factors and levels directly -- `no_repeats(color)`,
 `exclude(size, "small")` -- so a design never mentions an index.
@@ -240,12 +242,14 @@ Two strategies, two independent code paths, one declaration.
     racket examples/design_keywords.rhm   ~in_order, and constraints by name
     racket examples/design_vs_cross.rhm   design wider than crossing
     racket examples/windows.rhm           no_repeats
+    racket examples/cardinality.rhm       at_most_k_in_a_row, exactly_k
     racket examples/constraints_demo.rhm  constraints and the checker
     racket examples/inside_a_constraint.rhm  what a declaration produces
     racket examples/stroop.rhm            the notation, incl. derived factors
 
     racket tests/agreement.rhm            encoder and checker agree
     racket tests/sequential_regime.rhm    the design that broke SweetPea
+    racket tests/counter_encoding.rhm     cardinality encoding vs. the solver
     racket tests/uniformity.rhm           chi-square on #'random
     racket tests/verify.rhm               trial counts and distinctness
     tests/run-tests.sh                    designs that must FAIL to compile
@@ -261,8 +265,7 @@ not implemented, so derivation bodies are arbitrary Rhombus.
 
 `MinimumTrials` is absent and does not fit the current design: it changes how
 many trials exist rather than constraining an assignment, which belongs to a
-separate phase. `AtMostKInARow` for k >= 2 needs a counter encoding in
-`cnf_of`; `holds_in` already handles any k. `Merge` in its full sense --
+separate phase. `Merge` in its full sense --
 several crossings solved concurrently -- is not attempted.
 
 CMSGen and UniGen are not available as strategies. Both are largely a matter

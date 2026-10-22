@@ -36,6 +36,8 @@ export:
   exclude
   pin
   no_repeats
+  at_most_k_in_a_row
+  exactly_k
   sustained
   outer_crossed
   sequential
@@ -86,29 +88,6 @@ defn.macro 'constraint $name($arg, ...) ~given $g: $body':
                  Constraint($s, fun ($g): $body)'
 
 // ------------------------------------------------ the two shared consumers
-fun pairwise_not_both(vs :: List) :: List:
-  let n = vs.length()
-  let nested:
-    for List (a in 0..n):
-      for List (b in (a+1)..n):
-        [- vs[a], - vs[b]]
-  List.append(& nested)
-
-fun lower_clauses(vs :: List, lo :: Int) :: List:
-  cond
-  | lo == 0: []
-  | lo == 1: [vs]
-  | ~else: error("cnf_of: lower bound " ++ to_string(lo)
-                   ++ " needs a counter encoding (not implemented)")
-
-fun upper_clauses(vs :: List, hi :: Int) :: List:
-  cond
-  | hi >= vs.length(): []
-  | hi == 0: vs.map(fun (v): [- v])
-  | hi == 1: pairwise_not_both(vs)
-  | ~else: error("cnf_of: upper bound " ++ to_string(hi)
-                   ++ " needs a counter encoding (not implemented)")
-
 fun lit_var(a, var_of):
   match a
   | Not(inner): - var_of(inner)
@@ -119,9 +98,62 @@ fun lit_true(a, is_set):
   | Not(inner): !is_set(inner)
   | ~else: is_set(a)
 
-fun cnf_of(req :: Req, var_of) :: List:
+fun pairwise_not_both(vs :: List) :: List:
+  let n = vs.length()
+  let nested:
+    for List (a in 0..n):
+      for List (b in (a+1)..n):
+        [- vs[a], - vs[b]]
+  List.append(& nested)
+
+// At most k of `vs` are true, using the sequential counter encoding
+// (Sinz 2005). s(i,j), numbered from `fresh`, means "at least j+1 of
+// vs[0..i] are true". Needs (n-1)*k helper variables and O(n*k) clauses,
+// where the naive encoding would need one clause per (k+1)-subset.
+//
+// Note that nothing in `holds_in` corresponds to any of this: checking
+// still means counting. The encoder grew; the checker did not.
+fun at_most_k(vs :: List, k :: Int, fresh :: Int):
+  let n = vs.length()
+  cond
+  | k >= n: values([], fresh)
+  | k == 0: values(vs.map(fun (v): [- v]), fresh)
+  | k == 1: values(pairwise_not_both(vs), fresh)
+  | ~else:
+      fun sv(i, j): fresh + i * k + j
+      let first:
+        List.cons([- vs[0], sv(0, 0)],
+                  for List (j in 1..k): [- sv(0, j)])
+      let middle:
+        let nested:
+          for List (i in 1..(n-1)):
+            let a = [[- vs[i], sv(i, 0)],
+                     [- sv(i-1, 0), sv(i, 0)],
+                     [- vs[i], - sv(i-1, k-1)]]
+            let b:
+              let inner:
+                for List (j in 1..k):
+                  [[- vs[i], - sv(i-1, j-1), sv(i, j)],
+                   [- sv(i-1, j), sv(i, j)]]
+              List.append(& inner)
+            a ++ b
+        List.append(& nested)
+      let last = [[- vs[n-1], - sv(n-2, k-1)]]
+      values(first ++ middle ++ last, fresh + (n-1) * k)
+
+// At least k of `vs` are true == at most (n-k) of their negations are.
+fun at_least_k(vs :: List, k :: Int, fresh :: Int):
+  let n = vs.length()
+  cond
+  | k <= 0: values([], fresh)
+  | k == 1: values([vs], fresh)
+  | ~else: at_most_k(vs.map(fun (v): - v), n - k, fresh)
+
+fun cnf_of(req :: Req, var_of, fresh :: Int):
   let vs = req.atoms.map(fun (a): lit_var(a, var_of))
-  lower_clauses(vs, req.lo) ++ upper_clauses(vs, req.hi)
+  let (lo_cls, f1) = at_least_k(vs, req.lo, fresh)
+  let (hi_cls, f2) = at_most_k(vs, req.hi, f1)
+  values(lo_cls ++ hi_cls, f2)
 
 fun holds_in(req :: Req, is_set) :: Boolean:
   let n:
@@ -189,13 +221,20 @@ constraint pin(i, f, lvl) ~given geom:
 // This is AtMostKInARow with k = 1: over each window of two adjacent
 // trials, at most one carries the level. Note that nothing in cnf_of or
 // holds_in changed to support it -- a window is just another set of atoms.
-constraint no_repeats(f) ~given geom:
+constraint at_most_k_in_a_row(k, f) ~given geom:
   let fi = index_of_factor(geom, f)
   let nested:
     for List (li in 0..geom.counts[fi]):
-      for List (i in 0..(geom.n_trials - 1)):
-        at_most(1, [Lev(i, fi, li), Lev(i + 1, fi, li)])
+      for List (i in 0..(geom.n_trials - k)):
+        let window:
+          for List (d in 0..(k + 1)):
+            Lev(i + d, fi, li)
+        at_most(k, window)
   List.append(& nested)
+
+// AtMostKInARow with k = 1, kept because it reads better in a design.
+constraint no_repeats(f) ~given geom:
+  (at_most_k_in_a_row(1, f).reqs)(geom)
 
 // A factor whose level is held constant across each segment. Expressed as
 // an equivalence between the segment's first trial and each later one:
@@ -244,3 +283,13 @@ constraint sequential(f) ~given geom:
   let n = geom.counts[fi]
   for List (s in 0..n_seg):
     at_least(1, [Lev(s * geom.seg_len, fi, s mod n)])
+
+// Exactly k trials carry this level. Needs the counter encoding for k >= 2;
+// `holds_in` needed no change at all, because checking is still counting.
+constraint exactly_k(k, f, lvl) ~given geom:
+  let fi = index_of_factor(geom, f)
+  let li = index_of_level(geom, fi, lvl)
+  let atoms:
+    for List (i in 0..geom.n_trials):
+      Lev(i, fi, li)
+  [exactly(k, atoms)]

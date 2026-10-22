@@ -1,0 +1,40 @@
+#lang rhombus
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue", "green"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+fun colours(s): for List (t in s): t[0]
+
+println("6 trials: 3 colours x 2 sizes\n")
+
+println("exactly_k(4, color, \"red\")  -- impossible, red can only appear twice")
+println("  -> " ++ to_string(synthesize_trials(plan, 1, ~constraints: [exactly_k(4, color, "red")],
+                                               ~strategy: #'iterate, ~solver: S).length())
+          ++ " sequences")
+
+println("\nexactly_k(2, color, \"red\")  -- which the crossing already implies")
+for (s in synthesize_trials(plan, 2, ~constraints: [exactly_k(2, color, "red")],
+                            ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(colours(s)))
+
+println("\nat_most_k_in_a_row(1, color)  -- no colour twice in a row")
+for (s in synthesize_trials(plan, 2, ~constraints: [at_most_k_in_a_row(1, color)],
+                            ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(colours(s)))
+
+println("\nat_most_k_in_a_row(2, size)  -- size may repeat, but not three times")
+let c2 = [at_most_k_in_a_row(2, size)]
+for (s in synthesize_trials(plan, 2, ~constraints: c2, ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(for List (t in s): t[1]))
+let bad = [["red","small"],["blue","small"],["green","small"],
+           ["red","large"],["blue","large"],["green","large"]]
+println("  three smalls in a row -> checker says "
+          ++ to_string(check_sequence(plan, bad, ~constraints: c2)))

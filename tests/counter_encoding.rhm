@@ -1,0 +1,66 @@
+#lang rhombus
+// Verify the cardinality encoding against ground truth: for every
+// assignment of the real variables, the clauses must be satisfiable
+// exactly when that assignment has between lo and hi variables true.
+// The solver decides the helper variables, so this tests the encoding
+// rather than enumerating 2^aux cases.
+import:
+  rhombus/subprocess
+  "../constraints.rhm" open
+
+fun all_assignments(n):
+  if n == 0
+  | [[]]
+  | let tails = all_assignments(n - 1)
+    let nested:
+      for List (b in [#false, #true]):
+        for List (t in tails): List.cons(b, t)
+    List.append(& nested)
+
+fun sat(cls, n_vars):
+  let path = "/tmp/counter_test.cnf"
+  let out = Port.Output.open_file(path, ~exists: #'truncate)
+  Port.Output.using out:
+    println("p cnf " ++ to_string(n_vars) ++ " " ++ to_string(cls.length()))
+    for (c in cls):
+      let line: for values(s = "") (v in c): s ++ to_string(v) ++ " "
+      println(line ++ "0")
+  out.close()
+  let rp = path ++ ".out"
+  let o2 = Port.Output.open_file(rp, ~exists: #'truncate)
+  let sp = subprocess.run("cryptominisat5", ~out: o2, ~err: #'pipe, path)
+  sp.wait()
+  o2.close()
+  let ip = Port.Input.open_file(rp)
+  let text: for values(a = "") (l in ip.lines()): a ++ l ++ "\n"
+  ip.close()
+  !text.contains("s UNSATISFIABLE")
+
+fun check(n, lo, hi):
+  let atoms = for List (i in 0..n): Lev(0, 0, i)
+  let (cls, next) = cnf_of(Req(atoms, lo, hi),
+                           fun (a): match a | Lev(_, _, i): i + 1,
+                           n + 1)
+  let n_vars = next - 1
+  let bad:
+    for values(acc = 0) (vals in all_assignments(n)):
+      let units:
+        for List (i in 0..n): [if vals[i] | i + 1 | - (i + 1)]
+      let c: for values(k = 0) (b in vals): if b | k + 1 | k
+      let want = c >= lo && c <= hi
+      let got = sat(cls ++ units, n_vars)
+      if want == got | acc | acc + 1
+  println("  n=" ++ to_string(n) ++ " lo=" ++ to_string(lo) ++ " hi=" ++ to_string(hi)
+            ++ "   helper vars=" ++ to_string(n_vars - n)
+            ++ "  clauses=" ++ to_string(cls.length())
+            ++ "   " ++ (if bad == 0 | "ok" | to_string(bad) ++ " WRONG"))
+
+println("cardinality encoding vs. the solver, over every assignment:")
+check(4, 0, 0)
+check(4, 1, 1)
+check(4, 0, 2)
+check(5, 2, 2)
+check(5, 0, 3)
+check(5, 3, 5)
+check(5, 2, 3)
+check(6, 2, 4)
