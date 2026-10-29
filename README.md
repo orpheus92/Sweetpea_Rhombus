@@ -140,18 +140,29 @@ across each instance of the inner design, which is SweetPea's `Nest`.
 
 ## Constraints available
 
-    consistent()        one level per factor per trial        (automatic)
-    crossed()           each combination once per segment     (automatic)
-    sustained(f)        held constant across a segment        (automatic with ~within)
-    outer_crossed(f)    each segment gets a distinct level    (automatic with ~within)
-    exclude(f, level)   a level that never appears
-    pin(i, f, level)    a level fixed to a trial
-    no_repeats(f)             no two adjacent trials share a level
-    at_most_k_in_a_row(k, f)  AtMostKInARow, any k
-    exactly_k(k, f, level)    exactly k trials carry this level
+    consistent()               one level per factor per trial     (automatic)
+    crossed()                  each combination once per segment   (automatic)
+    sustained(f)               held constant across a segment      (~within)
+    outer_crossed(f)           each segment gets a distinct level  (~within)
+    exclude(f, level)          a level that never appears
+    pin(i, f, level)           a level fixed to a trial
+    no_repeats(f)              no two adjacent trials share a level
+    at_most_k_in_a_row(k, t)   AtMostKInARow, any k
+    at_least_k_in_a_row(k, t)  AtLeastKInARow
+    exactly_k_in_a_row(k, t)   ExactlyKInARow
+    exactly_k(k, f, level)     exactly k trials carry this level
 
 Constraints name factors and levels directly -- `no_repeats(color)`,
 `exclude(size, "small")` -- so a design never mentions an index.
+
+The three run-length constraints take a target `t` that is either a factor,
+in which case the rule applies to every one of its levels, or a single
+`[factor, level]` pair:
+
+    at_most_k_in_a_row(1, color)            no colour twice running
+    at_least_k_in_a_row(2, [color, "red"])  red, when it appears, appears twice
+
+SweetPea's `AtMostKInARow` accepts the same two shapes.
 
 `sequential` is no longer written as a constraint. Ordering the segments is a
 property of the design, so it is stated there:
@@ -243,6 +254,7 @@ Two strategies, two independent code paths, one declaration.
     racket examples/design_vs_cross.rhm   design wider than crossing
     racket examples/windows.rhm           no_repeats
     racket examples/cardinality.rhm       at_most_k_in_a_row, exactly_k
+    racket examples/run_length.rhm        at_least/at_most/exactly k in a row
     racket examples/constraints_demo.rhm  constraints and the checker
     racket examples/inside_a_constraint.rhm  what a declaration produces
     racket examples/stroop.rhm            the notation, incl. derived factors
@@ -250,6 +262,7 @@ Two strategies, two independent code paths, one declaration.
     racket tests/agreement.rhm            encoder and checker agree
     racket tests/sequential_regime.rhm    the design that broke SweetPea
     racket tests/counter_encoding.rhm     cardinality encoding vs. the solver
+    racket tests/run_length.rhm           run lengths vs. brute force
     racket tests/uniformity.rhm           chi-square on #'random
     racket tests/verify.rhm               trial counts and distinctness
     tests/run-tests.sh                    designs that must FAIL to compile

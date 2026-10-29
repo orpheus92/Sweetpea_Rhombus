@@ -37,6 +37,8 @@ export:
   pin
   no_repeats
   at_most_k_in_a_row
+  at_least_k_in_a_row
+  exactly_k_in_a_row
   exactly_k
   sustained
   outer_crossed
@@ -221,16 +223,71 @@ constraint pin(i, f, lvl) ~given geom:
 // This is AtMostKInARow with k = 1: over each window of two adjacent
 // trials, at most one carries the level. Note that nothing in cnf_of or
 // holds_in changed to support it -- a window is just another set of atoms.
-constraint at_most_k_in_a_row(k, f) ~given geom:
-  let fi = index_of_factor(geom, f)
+// A run-length constraint aims at either a whole factor -- every one of its
+// levels -- or a single (factor, level) pair, written as a two-element list.
+// SweetPea's AtMostKInARow takes the same two shapes; a Factor is not a List,
+// so one `match` separates them.
+fun target_levels(geom, target):
+  match target
+  | [f, lvl]:
+      let fi = index_of_factor(geom, f)
+      values(fi, [index_of_level(geom, fi, lvl)])
+  | ~else:
+      let fi = index_of_factor(geom, target)
+      let all:
+        for List (li in 0..geom.counts[fi]):
+          li
+      values(fi, all)
+
+// No window of k+1 consecutive trials is entirely this level.
+fun runs_at_most(geom, fi, li, k):
+  for List (i in 0..(geom.n_trials - k)):
+    let window:
+      for List (d in 0..(k + 1)):
+        Lev(i + d, fi, li)
+    at_most(k, window)
+
+// Wherever this level appears, its run is at least k long.
+//
+// A run starts at trial i when x_i holds and x_{i-1} does not, so "a run
+// starting at i continues to i+j" is the clause
+//   (not x_i) or x_{i-1} or x_{i+j}
+// and a clause is just `at_least(1, ...)` over literals -- so this needs
+// nothing new from cnf_of, and nothing at all from holds_in. A run with no
+// room left before the end of the sequence is forbidden from starting.
+fun runs_at_least(geom, fi, li, k):
+  let n = geom.n_trials
+  fun x(i): Lev(i, fi, li)
   let nested:
-    for List (li in 0..geom.counts[fi]):
-      for List (i in 0..(geom.n_trials - k)):
-        let window:
-          for List (d in 0..(k + 1)):
-            Lev(i + d, fi, li)
-        at_most(k, window)
+    for List (i in 0..n):
+      // "a run starts at i" is (x_i and not x_{i-1}); at i = 0 it is just x_i
+      let starts = if i == 0 | [Not(x(0))] | [Not(x(i)), x(i - 1)]
+      if i + k <= n
+      | for List (j in 1..k):
+          at_least(1, starts ++ [x(i + j)])
+      | [at_least(1, starts)]
   List.append(& nested)
+
+fun over_targets(geom, target, per_level):
+  let (fi, lis) = target_levels(geom, target)
+  let nested:
+    for List (li in lis):
+      per_level(fi, li)
+  List.append(& nested)
+
+constraint at_most_k_in_a_row(k, target) ~given geom:
+  over_targets(geom, target, fun (fi, li): runs_at_most(geom, fi, li, k))
+
+constraint at_least_k_in_a_row(k, target) ~given geom:
+  over_targets(geom, target, fun (fi, li): runs_at_least(geom, fi, li, k))
+
+// Exactly k is at most k and at least k. Both halves are already declared,
+// so this composes them rather than restating either.
+constraint exactly_k_in_a_row(k, target) ~given geom:
+  over_targets(geom, target,
+               fun (fi, li):
+                 runs_at_most(geom, fi, li, k)
+                   ++ runs_at_least(geom, fi, li, k))
 
 // AtMostKInARow with k = 1, kept because it reads better in a design.
 constraint no_repeats(f) ~given geom:
