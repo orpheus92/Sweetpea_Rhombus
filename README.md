@@ -250,18 +250,74 @@ so writing a transition predicate as if it took one value does not compile
 
 A window factor has no level for the first `w-1` trials of a segment, since
 its window would reach back past the start. That is SweetPea's preamble, and
-it shows up in three places: a trial inside it reads `#false` for that
-factor, `consistent` requires that none of its levels be set there, and if
-the factor is crossed the segment grows by the preamble -- the crossing can
-only use trials where every crossed factor has a level. So balancing colour
-against repetition over three colours is 6 + 1 = 7 trials.
+it shows up in four places: a trial inside it reads `#false` for that
+factor, `consistent` requires that none of its levels be set there, `decode`
+expects none, and if the factor is crossed the segment grows by the preamble
+-- the crossing can only use trials where every crossed factor has a level.
+So balancing colour against repetition over three colours is 6 + 1 = 7
+trials.
 
-`#'random` refuses a design with a window factor and says why: a window
-factor's value is decided by the trials around it, so a random proposal
-cannot fill it in.
+### Strides, starts, chains and else
 
-Not yet: a stride above 1, an explicit `start`, a derived factor whose
-parent is itself derived, and `ElseLevel`.
+    factor alternating(color) ~width 2 ~stride 2:     // every other trial
+      [derived same(prev, now): prev == now,
+       derived diff(prev, now): prev != now]
+
+    factor late(color) ~width 2 ~start 2:             // levels begin at 2
+      [...]
+
+`~stride s` gives the factor a level every `s` trials rather than every
+trial, and `~start` overrides the trial its levels begin on. Together they
+generalize the preamble from "the first `w-1` trials" into "these are the
+trials it is scored on", which is one predicate -- `has_level` -- that
+everything reading a trial now asks first. A strided factor cannot be
+crossed, since it has no level in most trials, and cannot be read by another
+factor, which is SweetPea's restriction too; a `~start` earlier than the
+computed one is refused rather than left to the predicate to cope with,
+which is where SweetPea leaves it.
+
+    factor emphasis(color, word):
+      [derived bold(c, w): c == "red" && w == "red",
+       else plain]
+
+`else` is SweetPea's `ElseLevel`: a level with no predicate of its own,
+holding exactly when none of the others do.
+
+A derived factor may derive from another:
+
+    factor switched(congruency) ~width 2:
+      [derived stay(prev, now): prev == now,
+       derived flip(prev, now): prev != now]
+
+The encoder needs nothing for this -- the parent's level variables exist
+like any factor's and its own requirement ties them to its parents, so the
+chain composes. What follows the chain is the preamble, computed through it
+(own `width-1` plus the deepest parent's), and the order the sampler fills
+the columns in, shallowest first so a child reads the value just computed.
+SweetPea does the same with `Factor._get_depth` and a sort.
+
+### Crossing a derived factor
+
+Any of these may be crossed, because a derived factor's level variables are
+ordinary variables and the crossing never learns where they came from:
+
+    ~cross: [color, congruency]     a within-trial derived factor
+    ~cross: [color, repetition]     a window factor (+ its preamble)
+    ~cross: [color, switched]       a factor two deep
+    ~cross: [congruency, switched]  two derived factors together
+
+`tests/derived.rhm` covers all four. The exception is a strided factor, for
+the reason above.
+
+One difference from SweetPea. If a crossed combination cannot occur --
+because it contradicts a derived level's predicate -- the design here has no
+solution. SweetPea's `CrossBlock` behaves the same way by default, but takes
+`require_complete_crossing=False` to drop the impossible combinations and
+shrink the crossing, and there is no equivalent here yet. The realizability
+test that `~cover` already performs is what such an option would need.
+
+`examples/derived_chain.rhm` runs a chain, a stride and an `else` level
+through one design and prints which factor is scored where.
 
 ## Generating trials
 
@@ -274,22 +330,36 @@ parent is itself derived, and `ElseLevel`.
 
 ## Constraints available
 
-    consistent()               one level per factor per trial     (automatic)
-    crossed()                  each combination once per segment   (automatic)
-    sustained(f)               held constant across a segment      (~within)
-    outer_crossed(f)           each segment gets a distinct level  (~within)
-    exclude(f, level)          a level that never appears
-    pin(i, f, level)           a level fixed to a trial, -1 is the last
-    no_repeats(f)              no two adjacent trials share a level
-    at_most_k_in_a_row(k, t)   AtMostKInARow, any k
-    at_least_k_in_a_row(k, t)  AtLeastKInARow
-    exactly_k_in_a_row(k, t)   ExactlyKInARow
-    exactly_k_multiple_in_a_row(k, t)   runs whose length is a multiple of k
-    exactly_k(k, f, level)     exactly k trials carry this level
-    outer_crossed(fs)          each outer combination gets one segment
-    latin_square([f, g])       LatinSquare, two factors of N levels
-    within_each(c)             any constraint, inside each segment only
-    cover_all_combinations(fs) every realizable combination appears
+Applied to every design, with no need to write them:
+
+    consistent()                 one level per factor per trial
+    crossed()                    each combination gets its share of a
+                                 segment: one each when the segment is one
+                                 crossing, and floor/ceiling of the average
+                                 when weights or ~min_trials make it longer
+    derivation(f)                a derived factor follows its parents
+
+Applied when the design calls for them:
+
+    sustained(f)                 held constant across a segment  (~within)
+    outer_crossed(fs)            each outer combination gets one segment
+    sequential(fs)               the segments take them in order (~in_order)
+    cover_all_combinations(fs)   every realizable combination appears
+                                 (~cover)
+
+Written by hand:
+
+    exclude(f, level)            a level that never appears
+    pin(i, f, level)             a level fixed to a trial, -1 is the last
+    no_repeats(f)                no two adjacent trials share a level
+    at_most_k_in_a_row(k, t)     AtMostKInARow, any k
+    at_least_k_in_a_row(k, t)    AtLeastKInARow
+    exactly_k_in_a_row(k, t)     ExactlyKInARow
+    exactly_k_multiple_in_a_row(k, t)
+                                 runs whose length is a multiple of k
+    exactly_k(k, f, level)       exactly k trials carry this level
+    latin_square([f, g])         LatinSquare, two factors
+    within_each(c)               any constraint, inside each segment only
 
 Constraints name factors and levels directly -- `no_repeats(color)`,
 `exclude(size, "small")` -- so a design never mentions an index.
@@ -396,6 +466,11 @@ genuine constraint, since it constrains trials relative to each other.
                           solution, which is a search over k rather than a
                           declaration
     ContinuousConstraint  continuous factors are not in the encoding at all
+    LatinSquare           three or more factors, which needs the odometer
+                          over the rotations of all but the longest
+    CrossBlock            require_complete_crossing=False, which drops the
+                          combinations a derived predicate rules out instead
+                          of leaving the design unsatisfiable
 
 ## Sampling strategies
 
@@ -517,6 +592,8 @@ Two strategies, two independent code paths, one declaration.
     racket examples/derived_chain.rhm     derived chains, strides, else levels
 
     bash tests/run-tests.sh               everything below, in one go
+                                          (plus the bad-*.rhm designs, which
+                                           must fail to compile)
 
     racket tests/agreement.rhm            encoder and checker agree
     racket tests/all_constraints.rhm      every constraint, against a hand count
