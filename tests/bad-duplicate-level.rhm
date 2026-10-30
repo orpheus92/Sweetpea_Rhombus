@@ -1,0 +1,8 @@
+#lang rhombus
+// A level listed twice. The crossing counts levels, so a duplicate silently
+// changes how many trials a design has; `factor` refuses it at compile time.
+import: "../sweetpea.rhm" open
+
+factor color: ["red", "blue", "red"]
+
+println("if this prints, the duplicate was not caught")

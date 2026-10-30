@@ -1,0 +1,103 @@
+#lang rhombus
+// Latin square counterbalancing: SweetPea's LatinSquare(factors).
+//
+// Read the sequence as rows of N trials. Every row holds every level of both
+// factors, the second factor follows the first by an offset that is constant
+// within a row, and consecutive rows take consecutive offsets. Which offset
+// the first row gets is the solver's choice, so the pattern does not depend
+// on the order the levels were declared in.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor item:  ["i1", "i2", "i3", "i4"]
+factor order: ["o1", "o2", "o3", "o4"]
+experiment plan:
+  ~design: [item, order]
+  ~cross: [item, order]
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+let n = 4
+
+fun print_square(s):
+  for (r in 0..(g.n_trials / n)):
+    let line:
+      for values(acc = "    ") (c in 0..n):
+        let t = s[r * n + c]
+        acc ++ t[0] ++ "/" ++ t[1] ++ "   "
+    println(line)
+
+println(to_string(g.n_trials) ++ " trials, read as "
+          ++ to_string(g.n_trials / n) ++ " rows of " ++ to_string(n) ++ "\n")
+
+let squares = synthesize_trials(plan, 2, ~constraints: [latin_square([item, order])],
+                                ~strategy: #'iterate, ~solver: S)
+for (k in 0..squares.length()):
+  println("square " ++ to_string(k + 1) ++ ":")
+  print_square(squares[k])
+  println("")
+
+// The same constraint answers the question about a finished square, since
+// the checker reads the requirements the solver was given. Here is one that
+// is wrong in a way only the third part of the definition notices: every row
+// is a proper permutation and every row has a constant offset, but two rows
+// share an offset, so a pair of levels appears twice and another never.
+let repeated_offset = [["i1", "o1"], ["i2", "o2"], ["i3", "o3"], ["i4", "o4"],
+                       ["i1", "o2"], ["i2", "o3"], ["i3", "o4"], ["i4", "o1"],
+                       ["i1", "o1"], ["i2", "o2"], ["i3", "o3"], ["i4", "o4"],
+                       ["i1", "o4"], ["i2", "o1"], ["i3", "o2"], ["i4", "o3"]]
+println("a square whose third row reuses the first row's offset:")
+print_square(repeated_offset)
+println("  checker says: "
+          ++ to_string(check_sequence(plan, repeated_offset,
+                                      ~constraints: [latin_square([item, order])])))
+println("  (`crossed` objects as well, since a pair then appears twice)")
+
+// A square per session, rather than one square over the whole study, is
+// within_each -- no extra work in latin_square itself.
+factor session: ["s1", "s2"]
+experiment per_session:
+  ~design: [item, order]
+  ~cross: [item, order]
+  ~within: session
+
+let gs = geometry_of(per_session)
+println("")
+println("within_each(latin_square([item, order])) under ~within: "
+          ++ to_string(gs.n_trials) ++ " trials, a square in each of "
+          ++ to_string(gs.n_trials / gs.seg_len) ++ " sessions")
+let one = synthesize_trials(per_session, 1,
+                            ~constraints: [within_each(latin_square([item, order]))],
+                            ~strategy: #'iterate, ~solver: S)[0]
+for (seg in 0..(gs.n_trials / gs.seg_len)):
+  println("  session " ++ to_string(seg + 1) ++ ":")
+  for (r in 0..(gs.seg_len / n)):
+    let line:
+      for values(acc = "    ") (c in 0..n):
+        let t = one[seg * gs.seg_len + r * n + c]
+        acc ++ t[0] ++ "/" ++ t[1] ++ "   "
+    println(line)
+
+// The two factors need not have the same number of levels. The row is as
+// long as the longer one -- SweetPea calls that the diagonal length -- and
+// the shorter fills the row by repeating, so with four against two each of
+// the two takes half of every row and the diagonal is read modulo two.
+factor pair2: ["p1", "p2"]
+experiment uneven:
+  ~design: [item, pair2]
+  ~cross: [item, pair2]
+let gu = geometry_of(uneven)
+println("")
+println("4 levels against 2: " ++ to_string(gu.n_trials) ++ " trials in "
+          ++ to_string(gu.n_trials / n) ++ " rows of " ++ to_string(n))
+let squares2 = synthesize_trials(uneven, 1, ~constraints: [latin_square([item, pair2])],
+                                 ~strategy: #'iterate, ~solver: S)
+for (r in 0..(gu.n_trials / n)):
+  let line:
+    for values(acc = "    ") (c in 0..n):
+      let t = squares2[0][r * n + c]
+      acc ++ t[0] ++ "/" ++ t[1] ++ "   "
+  println(line)
+println("  each row holds all four items once and each of the two twice")

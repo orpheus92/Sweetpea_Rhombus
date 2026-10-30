@@ -1,0 +1,191 @@
+#lang rhombus
+// The derived-factor shapes beyond a plain within-trial predicate:
+//
+//   a derived parent   a factor derived from a derived factor
+//   ~stride            a level every s trials rather than every trial
+//   ~start             where its levels begin, overriding the computed trial
+//   else              SweetPea's ElseLevel: whatever the others do not match
+//
+// Each derived column is recomputed here from the basic columns alone, so
+// the oracle shares nothing with the encoder or the checker.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+// two deep: this reads congruency, which is itself derived
+factor switched(congruency) ~width 2:
+  [derived stay(prev, now): prev == now,
+   derived flip(prev, now): prev != now]
+
+// ================================================ 1. a derived parent
+experiment deep:
+  ~design: [color, word, congruency, switched]
+  ~cross: [color, word]
+
+let gd = geometry_of(deep)
+// congruency needs no lead-in; switched reads two congruency values, so it
+// has no level on the first trial
+let r1 = gd.preamble == [0, 0, 0, 1] && gd.n_trials == 4
+report("preambles are computed through the chain: "
+         ++ to_string(gd.preamble), r1)
+
+fun con_of(c, w): if c == w | "con" | "inc"
+fun columns(s):
+  // recompute both derived columns from the colour and word columns
+  let cons: for List (t in s): con_of(t[0], t[1])
+  let sw:
+    for List (i in 0..s.length()):
+      if i == 0 | #false | (if cons[i] == cons[i - 1] | "stay" | "flip")
+  [cons, sw]
+
+let got1 = synthesize_trials(deep, 100, ~strategy: #'iterate, ~solver: S)
+let sound1:
+  for values(ok = #true) (s in got1):
+    let want = columns(s)
+    ok && (for List (t in s): t[2]) == want[0]
+       && (for List (t in s): t[3]) == want[1]
+let r2 = got1.length() == 24 && sound1
+report("all " ++ to_string(got1.length())
+         ++ " sequences derive congruency and then switched correctly", r2)
+
+// #'random has to fill them in the right order, shallowest first
+let rnd1 = synthesize_trials(deep, 20, ~strategy: #'random)
+let sound_rnd:
+  for values(ok = #true) (s in rnd1):
+    let want = columns(s)
+    ok && (for List (t in s): t[2]) == want[0]
+       && (for List (t in s): t[3]) == want[1]
+       && check_sequence(deep, s) == []
+let r3 = rnd1.length() == 20 && sound_rnd
+report("#'random fills the chain in depth order on " ++ to_string(rnd1.length())
+         ++ " candidates", r3)
+
+// and the checker catches a wrong value in the deeper column
+let bad:
+  for List (i in 0..got1[0].length()):
+    let t = got1[0][i]
+    if i == 1 | [t[0], t[1], t[2], (if t[3] == "stay" | "flip" | "stay")] | t
+let r4 = check_sequence(deep, bad) != []
+report("a flipped value in the deeper column is rejected", r4)
+
+// ================================================ 2. an else level
+factor size: ["small", "large"]
+factor shade(color, size):
+  [derived bold(c, z): c == "red" && z == "large",
+   else other]
+experiment with_else:
+  ~design: [color, size, shade]
+  ~cross: [color, size]
+
+let got2 = synthesize_trials(with_else, 100, ~strategy: #'iterate, ~solver: S)
+fun shade_of(c, z): if c == "red" && z == "large" | "bold" | "other"
+let sound2:
+  for values(ok = #true) (s in got2):
+    ok && (for List (t in s): t[2]) == (for List (t in s): shade_of(t[0], t[1]))
+let r5 = got2.length() == 24 && sound2
+report("else matches exactly what bold does not, on all "
+         ++ to_string(got2.length()) ++ " sequences", r5)
+// and it is a level like any other, so constraints name it
+let pinned = synthesize_trials(with_else, 100, ~constraints: [pin(0, shade, shade.bold)],
+                               ~strategy: #'iterate, ~solver: S)
+let r6 = pinned.length() == 6
+           && (for values(ok = #true) (s in pinned): ok && s[0][2] == "bold")
+report("pin(0, shade, shade.bold) -> " ++ to_string(pinned.length())
+         ++ " sequences (6: red/large first, then 3! for the rest)", r6)
+
+// ================================================ 3. stride
+factor every_other(color) ~width 2 ~stride 2:
+  [derived same(prev, now): prev == now,
+   derived diff(prev, now): prev != now]
+experiment strided:
+  ~design: [color, size, every_other]
+  ~cross: [color, size]
+
+let gs = geometry_of(strided)
+let got3 = synthesize_trials(strided, 100, ~strategy: #'iterate, ~solver: S)
+// scored at trials 1 and 3 only, and the value is the window there
+let sound3:
+  for values(ok = #true) (s in got3):
+    for values(o = ok) (i in 0..s.length()):
+      let want:
+        if i == 0 || i mod 2 == 0
+        | #false
+        | (if s[i][0] == s[i - 1][0] | "same" | "diff")
+      o && s[i][2] == want
+let r7 = gs.preamble[2] == 1 && gs.stride[2] == 2
+           && got3.length() == 24 && sound3
+report("~stride 2 gives a level at trials 1 and 3 only, and the right one"
+         ++ " there, on all " ++ to_string(got3.length()) ++ " sequences", r7)
+
+// ================================================ 4. start
+factor late(color) ~width 2 ~stride 1 ~start 2:
+  [derived l_same(prev, now): prev == now,
+   derived l_diff(prev, now): prev != now]
+experiment started:
+  ~design: [color, size, late]
+  ~cross: [color, size]
+let gt = geometry_of(started)
+let got4 = synthesize_trials(started, 100, ~strategy: #'iterate, ~solver: S)
+let sound4:
+  for values(ok = #true) (s in got4):
+    for values(o = ok) (i in 0..s.length()):
+      let want:
+        if i < 2 | #false | (if s[i][0] == s[i - 1][0] | "l_same" | "l_diff")
+      o && s[i][2] == want
+let r8 = gt.preamble[2] == 2 && got4.length() == 24 && sound4
+report("~start 2 holds the first two trials empty even though one would do", r8)
+
+// ================================================ 5. what is refused
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+fun refused(label, want, thunk):
+  let msg = caught(thunk)
+  let ok = msg && to_string(msg).contains(want)
+  report(label, ok)
+  when !ok
+  | println("          got " ++ (if msg | to_string(msg) | "no error"))
+  ok
+
+experiment strided_crossed:
+  ~design: [color, size, every_other]
+  ~cross: [color, every_other]
+factor reads_strided(every_other):
+  [derived r_a(x): x == "same",
+   else r_b]
+experiment reads_a_strided:
+  ~design: [color, size, every_other, reads_strided]
+  ~cross: [color, size]
+factor too_early(color) ~width 3 ~stride 1 ~start 1:
+  [derived e_a(a, b, c): a == b,
+   else e_b]
+experiment early:
+  ~design: [color, size, too_early]
+  ~cross: [color, size]
+
+println("")
+let r9 = refused("a strided factor in the crossing            ",
+                 "cannot be part of the crossing",
+                 fun (): geometry_of(strided_crossed))
+let r10 = refused("reading a strided factor                    ",
+                  "stride is above 1",
+                  fun (): geometry_of(reads_a_strided))
+let r11 = refused("~start before everything it reads has a level",
+                  "the earliest where everything it reads",
+                  fun (): geometry_of(early))
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+let bad_n: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad_n == 0 | "derived shapes: chains, strides, starts and else all hold" | to_string(bad_n) ++ " FAILED")

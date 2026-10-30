@@ -6,6 +6,8 @@ import:
 
 export:
   synthesize_trials
+  derivation
+  cover_all_combinations
   check_sequence
   count_sequences
   geometry_of
@@ -31,10 +33,48 @@ fun combinations(counts :: List) :: List:
       List.append(& nested)
 
 // --------------------------------------------------------------- geometry
+// A factor with its levels reduced to their values, which is what the
+// encoding and every constraint see. A derived level becomes its name here,
+// once, so that nothing downstream has to know it was derived.
+// How many factors deep a derived factor sits, and how many trials at the
+// start of a segment it has no level for. Both are recursive: a factor that
+// reads w trials of a parent cannot have a level until the parent has one
+// for all w of them. SweetPea computes the same two things, the depth as
+// Factor._get_depth and the preamble as the earliest trial where every
+// factor it reads has a level for that trial and the preceding width-1.
+// ~within takes one factor or a list of them; everything downstream wants
+// the list.
+fun within_list(exp :: Experiment) :: List:
+  cond
+  | !exp.within: []
+  | exp.within is_a List: exp.within
+  | ~else: [exp.within]
+
+fun depth_of(f :: Factor) :: Int:
+  if f.params == []
+  | 0
+  | 1 + (for values(m = 0) (p in f.params):
+           let d = depth_of(p)
+           if d > m | d | m)
+
+fun preamble_of(f :: Factor) :: Int:
+  if f.params == []
+  | 0
+  | (f.width - 1) + (for values(m = 0) (p in f.params):
+                       let q = preamble_of(p)
+                       if q > m | q | m)
+
+fun plain(f :: Factor) :: Factor:
+  let n = f.levels.length()
+  // a geometry always carries one weight per level, so nothing downstream
+  // has to cope with a missing or short list
+  let ws:
+    for List (li in 0..n):
+      if li < f.weights.length() | f.weights[li] | 1
+  Factor(f.name, for List (l in f.levels): level_value(l), f.params, f.width, ws,
+         f.stride, f.start)
+
 fun geometry_of(exp :: Experiment) :: Geom:
-  for (f in exp.design):
-    when f.params != []
-    | error("synthesize_trials: derived factors are not encoded yet: " ++ f.name)
   let counts = for List (f in exp.design): f.levels.length()
   // which design positions are crossed
   let cross_idx:
@@ -46,20 +86,87 @@ fun geometry_of(exp :: Experiment) :: Geom:
   when cross_idx.length() == 0
   | error("synthesize_trials: ~cross is empty")
   let cross_counts = for List (fi in cross_idx): counts[fi]
-  let inner_trials = product(cross_counts)
+  // A level of weight w is combined w times with each combination of the
+  // other crossed factors' levels, so the crossing takes as many trials as
+  // the product of the weight sums, while the set of distinct combinations
+  // is still the product of the level counts.
+  let weight_sums:
+    for List (fi in cross_idx):
+      let f = exp.design[fi]
+      for values(t = 0) (li in 0..counts[fi]):
+        t + (if li < f.weights.length() | f.weights[li] | 1)
+  let crossing_size = product(weight_sums)
+  // ~min_trials lengthens the segment. A segment shorter than one full
+  // crossing would be impossible, so the keyword can only make it longer,
+  // and inside a ~within design it applies to each segment -- which is what
+  // SweetPea does when it pushes a MinimumTrials into a nested block.
+  let min_trials = if exp.min_trials | exp.min_trials | 0
+  when min_trials < 0
+  | error("experiment " ++ exp.name ++ ": ~min_trials cannot be negative")
+  // A window factor has no level for the first width-1 trials of a segment.
+  // If such a factor is crossed, the segment needs those extra trials on
+  // top of the crossing, since the crossing can only use trials where every
+  // crossed factor has a level.
+  // where each factor's levels begin, and how often it has one
+  let pre_of:
+    for List (f in exp.design):
+      let computed = preamble_of(f)
+      if !f.start
+      | computed
+      | // an earlier start would ask a predicate about trials its parents
+        // have no level for, which SweetPea leaves to the predicate; here
+        // it is refused instead
+        let given = f.start
+        when given < computed
+        | error("factor " ++ f.name ++ ": ~start " ++ to_string(given)
+                  ++ " is before trial " ++ to_string(computed)
+                  ++ ", the earliest where everything it reads has a level")
+        given
+  let stride_of: for List (f in exp.design): f.stride
+  for (fi in cross_idx):
+    when stride_of[fi] > 1
+    | error("experiment " ++ exp.name ++ ": `" ++ exp.design[fi].name
+              ++ "` has a stride above 1, so it has no level in most trials"
+              ++ " and cannot be part of the crossing")
+  for (f in exp.design):
+    for (p2 in f.params):
+      when p2.stride > 1
+      | error("factor " ++ f.name ++ ": it reads `" ++ p2.name
+                ++ "`, whose stride is above 1; SweetPea does not allow that"
+                ++ " either")
+  let crossed_pre:
+    for values(m = 0) (fi in cross_idx):
+      if pre_of[fi] > m | pre_of[fi] | m
+  let body0 = if min_trials > crossing_size | min_trials | crossing_size
+  // Coverage can lengthen the design: one trial per combination at least,
+  // rounded up so the crossing still gets whole passes.
+  let body:
+    if !exp.cover
+    | body0
+    | let needed = realizable_combinations(exp.cover).length()
+      let need = if needed > body0 | needed | body0
+      ((need + crossing_size - 1) div crossing_size) * crossing_size
+  let inner_trials = body + crossed_pre
   if !exp.within
-  | Geom(inner_trials, exp.design, counts, combinations(cross_counts),
-         cross_idx, inner_trials,
-         for List (fi in 0..exp.design.length()): 1)
-  | // the ~within factor joins the design at the end, held constant
-    // across each instance of the inner block
-    let facs = List.add(exp.design, exp.within)
-    let cs = List.add(counts, exp.within.levels.length())
-    let n_seg = exp.within.levels.length()
+  | Geom(inner_trials, for List (f in exp.design): plain(f), counts,
+         combinations(cross_counts), cross_idx, inner_trials,
+         for List (fi in 0..exp.design.length()): 1,
+         pre_of, stride_of)
+  | // the ~within factors join the design at the end, each held constant
+    // across one instance of the inner block. With more than one, a segment
+    // holds one combination of them, which is SweetPea's outer block.
+    let withins = within_list(exp)
+    let facs: for List (f in exp.design ++ withins): plain(f)
+    let cs = counts ++ (for List (f in withins): f.levels.length())
+    let n_seg:
+      for values(acc = 1) (f in withins): acc * f.levels.length()
     let sustain:
-      List.add(for List (fi in 0..exp.design.length()): 1, inner_trials)
+      (for List (fi in 0..exp.design.length()): 1)
+        ++ (for List (f in withins): inner_trials)
     Geom(inner_trials * n_seg, facs, cs, combinations(cross_counts),
-         cross_idx, inner_trials, sustain)
+         cross_idx, inner_trials, sustain,
+         pre_of ++ (for List (f in withins): 0),
+         stride_of ++ (for List (f in withins): 1))
 
 // Variable numbering. Lev atoms come first, then Comb atoms.
 fun numbering(geom :: Geom):
@@ -95,24 +202,161 @@ fun comb_definition(geom :: Geom, var_of) :: List:
       List.append(& per_j)
   List.append(& nested)
 
+// ------------------------------------------------------ derived factors
+// A derived factor is not a free choice: its level in a trial is a function
+// of its parents' levels in that same trial. SweetPea calls the constraint
+// that says so Derivation, and applies it automatically; so does this.
+//
+// It is declared here rather than in constraints.rhm because it is the only
+// requirement that needs to know what a derived level is -- it calls the
+// predicate. Every other constraint sees a level as a value and cannot tell
+// a derived factor from a plain one, which is why `no_repeats(congruency)`
+// and `pin(0, congruency, "con")` need nothing special.
+//
+// For each parent combination the predicates decide which level must hold
+// and which must not:
+//
+//   parents are (red, red)  ->  congruency is con, and is not inc
+//
+// one clause per derived level, over the parent literals and that level's.
+// If no predicate holds for some parent combination then every level of the
+// derived factor is forbidden there, so that combination cannot occur --
+// which is how SweetPea excludes through a derived factor. If two hold, the
+// design contradicts itself rather than being merely unsatisfiable, and it
+// is refused.
+constraint derivation(f) ~given geom:
+  when f.params == []
+  | error("derivation: `" ++ f.name ++ "` is not a derived factor")
+  let fi = index_of_factor(geom, f)
+  // A parent may itself be derived: its level variables exist like any
+  // other factor's, and its own derivation requirement ties them to its
+  // parents, so the chain composes without anything further here.
+  let ps: for List (p in f.params): index_of_factor(geom, p)
+  let w = f.width
+  let pre = w - 1
+  // One slot per (parent, offset): parents in declaration order, and within
+  // a parent the offsets oldest first -- the order the predicate's
+  // parameters are in.
+  let slot_counts:
+    let nested:
+      for List (pi in ps):
+        for List (o in 0..w): geom.counts[pi]
+    List.append(& nested)
+  let nested:
+    for List (t in combinations(slot_counts)):
+      let vals:
+        for List (m in 0..t.length()):
+          geom.factors[ps[m div w]].levels[t[m]]
+      let stated:
+        for List (l in 0..geom.counts[fi]):
+          if f.levels[l].predicate | (f.levels[l].predicate)(& vals) | #false
+      let how_many:
+        for values(n = 0) (h in stated): if h | n + 1 | n
+      // an `else` level holds exactly when none of the stated ones does
+      let holds:
+        for List (l in 0..geom.counts[fi]):
+          if f.levels[l].predicate | stated[l] | how_many == 0
+      when how_many > 1
+      | error("derivation: `" ++ f.name ++ "` has more than one level for "
+                ++ to_string(vals) ++ "; its levels must be exclusive")
+      let per_trial:
+        for List (i in 0..geom.n_trials):
+          // where the factor has no level there is nothing to say, and a
+          // window never reaches back past the start of its own segment
+          if !has_level(geom, fi, i)
+          | []
+          | let given:
+              for List (m in 0..t.length()):
+                Not(Lev(i - pre + (m mod w), ps[m div w], t[m]))
+            for List (l in 0..geom.counts[fi]):
+              let concl = if holds[l] | Lev(i, fi, l) | Not(Lev(i, fi, l))
+              at_least(1, given ++ [concl])
+      List.append(& per_trial)
+  List.append(& nested)
+
+// ------------------------------------------------ covering combinations
+// SweetPea's CoverAllCombinations: every realizable combination of the
+// listed factors must appear in some trial. "Some trial realizes this whole
+// combination" is a disjunction of conjunctions, which is what the All atom
+// in constraints.rhm is for.
+//
+// A combination that cannot occur is not required. The case the
+// documentation names is one that contradicts a derived level's predicate,
+// and that is decided here, which is why this constraint sits beside
+// derivation rather than with the others: it is the predicate that says
+// which combinations are real. A combination ruled out for some other
+// reason -- an excluded level on a factor that is not listed, say -- is
+// still required, and the design then has no solution.
+fun realizable(fs :: List, t :: List) :: Boolean:
+  for values(ok = #true) (k in 0..fs.length()):
+    let f = fs[k]
+    // only a within-trial derived factor whose parents are all listed can
+    // be decided from the combination alone
+    if f.params == [] || f.width != 1
+    | ok
+    | let pos:
+        for List (p in f.params):
+          for values(found = -1) (m in 0..fs.length()):
+            if fs[m].name == p.name | m | found
+      if pos.contains(-1)
+      | ok
+      | let vals: for List (m in pos): level_value(fs[m].levels[t[m]])
+        ok && (f.levels[t[k]].predicate)(& vals)
+
+fun realizable_combinations(fs :: List) :: List:
+  let counts = for List (f in fs): f.levels.length()
+  combinations(counts).filter(~keep: fun (t): realizable(fs, t))
+
+constraint cover_all_combinations(fs) ~given geom:
+  for (f in fs):
+    for (li in 0..f.levels.length()):
+      let w = if li < f.weights.length() | f.weights[li] | 1
+      when w != 1
+      | error("cover_all_combinations: `" ++ f.name ++ "` has a weighted"
+                ++ " level, and the listed factors must be unweighted")
+  let idx = for List (f in fs): index_of_factor(geom, f)
+  let nested:
+    for List (t in realizable_combinations(fs)):
+      let options:
+        for List (i in 0..geom.n_trials):
+          All(for List (k in 0..idx.length()): Lev(i, idx[k], t[k]))
+      [at_least(1, options)]
+  List.append(& nested)
+
 // Every constraint in play, built-ins first.
 // The constraints every design gets, plus any the user supplied.
-fun builtins(geom :: Geom, ~in_order: in_order = #false) :: List:
-  let base = [consistent(), crossed()]
-  let nested:
+fun builtins(geom :: Geom, ~in_order: in_order = #false,
+             ~design: design :: List = [],
+             ~cover: cover = #false,
+             ~within: withins :: List = []) :: List:
+  // the geometry's factors carry level values, not predicates, so the
+  // derivation requirement is built from the factors as declared
+  let derived:
+    for values(acc = []) (f in design):
+      if f.params == [] | acc | List.add(acc, derivation(f))
+  let covering = if cover | [cover_all_combinations(cover)] | []
+  let base = [consistent(), crossed()] ++ derived ++ covering
+  // each outer factor is held constant across a segment, and the outer
+  // factors together are crossed over the segments -- one requirement for
+  // the lot, since with several of them it is their combinations that are
+  // crossed, not each factor separately
+  let held:
     for values(acc = base) (fi in 0..geom.factors.length()):
-      if geom.sustain[fi] > 1
-      | let f = geom.factors[fi]
-        let core = acc ++ [sustained(f), outer_crossed(f)]
-        if in_order | core ++ [sequential(f)] | core
-      | acc
-  nested
+      if geom.sustain[fi] > 1 | acc ++ [sustained(geom.factors[fi])] | acc
+  let outer:
+    for values(acc = []) (fi in 0..geom.factors.length()):
+      if geom.sustain[fi] > 1 | List.add(acc, geom.factors[fi]) | acc
+  if outer.length() == 0
+  | held
+  | let crossed_outer = held ++ [outer_crossed(outer)]
+    if in_order | crossed_outer ++ [sequential(outer)] | crossed_outer
 
 fun all_reqs(geom :: Geom, exp, extra :: List) :: List:
-  let cs = builtins(geom, ~in_order: exp.in_order) ++ extra
+  let cs = builtins(geom, ~in_order: exp.in_order, ~design: exp.design,
+                    ~cover: exp.cover, ~within: within_list(exp)) ++ extra
   let nested:
     for List (c in cs):
-      (c.reqs)(geom)
+      reqs_of(c, geom)
   List.append(& nested)
 
 // --------------------------------------------------------------- DIMACS
@@ -175,11 +419,14 @@ fun decode(geom :: Geom, var_of, model :: List) :: List:
       let hits:
         for values(acc = []) (li in 0..geom.counts[fi]):
           if truths.contains(var_of(Lev(i, fi, li))) | List.add(acc, li) | acc
-      when hits.length() != 1
+      let scored = has_level(geom, fi, i)
+      let want = if scored | 1 | 0
+      when hits.length() != want
       | error("decode: trial " ++ to_string(i) ++ ", factor "
                 ++ geom.factors[fi].name ++ " has " ++ to_string(hits.length())
-                ++ " levels set (expected 1)")
-      geom.factors[fi].levels[hits[0]]
+                ++ " levels set (expected " ++ to_string(want) ++ ")")
+      // a trial where the factor has no level reads as nothing
+      if scored | geom.factors[fi].levels[hits[0]] | #false
 
 // ---------------------------------------------- checking, from the SAME reqs
 // A sequence is a list of trials, each a list of level names.
@@ -198,10 +445,11 @@ fun check_sequence(exp :: Experiment, seq :: List,
                    ~constraints: extra :: List = []) :: List:
   let geom = geometry_of(exp)
   let is_set = checker_for(geom, seq)
-  let cs = builtins(geom, ~in_order: exp.in_order) ++ extra
+  let cs = builtins(geom, ~in_order: exp.in_order, ~design: exp.design,
+                    ~cover: exp.cover, ~within: within_list(exp)) ++ extra
   let bad:
     for values(acc = []) (c in cs):
-      let rs = (c.reqs)(geom)
+      let rs = reqs_of(c, geom)
       let ok:
         for values(o = #true) (r in rs): o && holds_in(r, is_set)
       if ok | acc | List.add(acc, c.name)
@@ -218,10 +466,12 @@ fun gather(geom, var_of, n_vars, reqs, n, blocking, acc, solver, tmp):
       let lev_vars:
         for values(a = []) (i in 0..geom.n_trials):
           for values(b = a) (fi in 0..geom.factors.length()):
-            let li:
-              for values(found = 0) (k in 0..geom.counts[fi]):
-                if geom.factors[fi].levels[k] == seq[i][fi] | k | found
-            List.add(b, var_of(Lev(i, fi, li)))
+            if seq[i][fi] == #false
+            | b          // no value for this factor in this trial
+            | let li:
+                for values(found = 0) (k in 0..geom.counts[fi]):
+                  if geom.factors[fi].levels[k] == seq[i][fi] | k | found
+              List.add(b, var_of(Lev(i, fi, li)))
       let block = lev_vars.map(fun (v): - v)
       gather(geom, var_of, n_vars, reqs, n - 1,
              List.add(blocking, block), List.add(acc, seq), solver, tmp)
@@ -237,32 +487,182 @@ fun shuffle(lst :: List) :: List:
 // of the combinations within each segment; a sustained factor gets one level
 // per segment (a random permutation of its levels); anything else in the
 // design but not crossed gets an independent random level per trial.
-fun propose(geom :: Geom) :: List:
+// Build a candidate sequence.
+//
+// Only the basic factors are guessed. A derived factor's value is computed
+// from its parents, with the same predicates the derivation requirement
+// uses, and left empty inside its preamble -- guessing it would be rejected
+// almost always, and for a window factor always, since a guess fills a
+// preamble trial that must stay empty. SweetPea's RandomGen does the same:
+// it partitions the design, samples the basic factors, and fills the derived
+// ones in dependency order, the preamble as its own range.
+//
+// Where the crossing fixes a within-trial derived level, the free parents are
+// not left to chance either: they are drawn uniformly from among the
+// assignments that produce the level asked for. SweetPea chooses among what
+// it calls the uncrossed basic source factors in the same spirit.
+//
+// That stays uniform over valid sequences, which picking the first parent
+// that happens to fit would not. Every arrangement of the crossing holds the
+// same multiset of combinations, so the number of ways to complete it is the
+// product of the per-trial option counts and is the same for every
+// arrangement; a uniform arrangement and a uniform completion of each trial
+// therefore give every valid sequence the same chance. A crossed factor with
+// a window wider than one trial is the exception -- its options depend on
+// trials already chosen -- and is left to rejection, which is what SweetPea
+// does with what it calls complex windows.
+fun set_at(lst :: List, k :: Int, v) :: List:
+  for List (m in 0..lst.length()): if m == k | v | lst[m]
+fun propose(geom :: Geom, design :: List) :: List:
+  let n_fac = geom.factors.length()
   let n_seg = geom.n_trials / geom.seg_len
+  fun cross_pos(fi):
+    for values(found = -1) (m in 0..geom.cross_idx.length()):
+      if geom.cross_idx[m] == fi | m | found
   let sustained_idx:
-    for values(acc = []) (fi in 0..geom.factors.length()):
+    for values(acc = []) (fi in 0..n_fac):
       if geom.sustain[fi] > 1 | List.add(acc, fi) | acc
-  // one level per segment for each sustained factor
-  let seg_levels:
-    for List (fi in sustained_idx):
-      shuffle(for List (li in 0..geom.counts[fi]): li)
-  let nested:
-    for List (s in 0..n_seg):
-      let order = shuffle(geom.combos)
-      for List (k in 0..geom.seg_len):
-        let combo = order[k]
-        for List (fi in 0..geom.factors.length()):
-          let ci:
-            for values(found = -1) (m in 0..geom.cross_idx.length()):
-              if geom.cross_idx[m] == fi | m | found
-          let si:
-            for values(found = -1) (m in 0..sustained_idx.length()):
-              if sustained_idx[m] == fi | m | found
-          cond
-          | ci >= 0: geom.factors[fi].levels[combo[ci]]
-          | si >= 0: geom.factors[fi].levels[seg_levels[si][s]]
-          | ~else: geom.factors[fi].levels[math.random(geom.counts[fi])]
-  List.append(& nested)
+  // One outer combination per segment, in a random order. With a single
+  // outer factor this is a permutation of its levels, as before; with
+  // several it has to be a permutation of their combinations, since that is
+  // what the outer crossing asks for.
+  let seg_combo:
+    shuffle(combinations(for List (fi in sustained_idx): geom.counts[fi]))
+  // the crossing covers the trials after the longest crossed preamble
+  let pre:
+    for values(m = 0) (k in 0..geom.cross_idx.length()):
+      let p = geom.preamble[geom.cross_idx[k]]
+      if p > m | p | m
+  let scored = geom.seg_len - pre
+  // the declared factor for a position, which carries the predicates
+  fun declared(fi):
+    for values(found = #false) (f in design):
+      if f.name == geom.factors[fi].name | f | found
+  fun pos_of(f):
+    for values(found = -1) (fi in 0..n_fac):
+      if geom.factors[fi].name == f.name | fi | found
+  fun depth_of_at(fi):
+    let f = declared(fi)
+    if !f | 0 | depth_of(f)
+  // the basic factors that are free to be chosen
+  let free_idx:
+    for values(acc = []) (fi in 0..n_fac):
+      let f = declared(fi)
+      if f && f.params == [] && cross_pos(fi) < 0 && geom.sustain[fi] <= 1
+      | List.add(acc, fi)
+      | acc
+
+  // ---- the basic skeleton: the crossing, the sustained levels, and a
+  // random level for everything else that is free
+  let skeleton:
+    let nested:
+      for List (s in 0..n_seg):
+        let order:
+          // one full crossing holds each combination as many times as the
+          // product of its levels' weights
+          let one_crossing:
+            let nested2:
+              for List (j in 0..geom.combos.length()):
+                let w:
+                  for values(acc = 1) (k in 0..geom.cross_idx.length()):
+                    acc * geom.factors[geom.cross_idx[k]].weights[geom.combos[j][k]]
+                for List (r in 0..w): geom.combos[j]
+            List.append(& nested2)
+          let c = one_crossing.length()
+          let reps = scored div c
+          let whole:
+            let nested3: for List (r in 0..reps): one_crossing
+            List.append(& nested3)
+          shuffle(whole ++ shuffle(one_crossing).take(scored - reps * c))
+        for List (k in 0..geom.seg_len):
+          for List (fi in 0..n_fac):
+            let ci = cross_pos(fi)
+            let si:
+              for values(found = -1) (m in 0..sustained_idx.length()):
+                if sustained_idx[m] == fi | m | found
+            cond
+            | !has_level(geom, fi, k): #false   // no level here at all
+            | ci >= 0 && k >= pre:
+                geom.factors[fi].levels[order[k - pre][ci]]
+            | si >= 0: geom.factors[fi].levels[seg_combo[s][si]]
+            | free_idx.contains(fi): #false     // chosen below
+            // a crossed factor in another factor's preamble, or a derived
+            // factor that is about to be computed: a level will do for now
+            | ~else: geom.factors[fi].levels[math.random(geom.counts[fi])]
+    List.append(& nested)
+
+  // the window of parent values a predicate sees at trial i
+  fun window_vals(seq, i, f):
+    for List (m in 0..(f.params.length() * f.width)):
+      seq[i - (f.width - 1) + (m mod f.width)][pos_of(f.params[m div f.width])]
+  fun level_for(f, vals):
+    let stated:
+      for values(found = #false) (l in 0..f.levels.length()):
+        let p2 = f.levels[l].predicate
+        let here = if p2 && p2(& vals) | level_value(f.levels[l]) | #false
+        if found | found | here
+    if stated
+    | stated
+    | // the `else` level, if there is one
+      for values(found = #false) (l in 0..f.levels.length()):
+        if found | found | (if f.levels[l].predicate | #false | level_value(f.levels[l]))
+
+  // ---- the free basic factors, drawn from what the crossing allows
+  // the within-trial derived factors whose level the crossing already fixed
+  let aimed_idx:
+    for values(acc = []) (fi in 0..n_fac):
+      let f = declared(fi)
+      if f && f.params != [] && f.width == 1 && cross_pos(fi) >= 0
+      | List.add(acc, fi)
+      | acc
+  let free_counts: for List (fi in free_idx): geom.counts[fi]
+  fun random_fill(t0):
+    for values(acc = t0) (m in 0..free_idx.length()):
+      set_at(acc, free_idx[m],
+             geom.factors[free_idx[m]].levels[math.random(free_counts[m])])
+  let filled:
+    for List (i in 0..geom.n_trials):
+      let t0 = skeleton[i]
+      if aimed_idx.length() == 0
+      | random_fill(t0)          // nothing to agree with; draw freely
+      | let options:
+          let nested4:
+            for List (c in combinations(free_counts)):
+              let t:
+                for values(acc = t0) (m in 0..free_idx.length()):
+                  set_at(acc, free_idx[m], geom.factors[free_idx[m]].levels[c[m]])
+              let ok:
+                for values(o = #true) (fi in aimed_idx):
+                  let f = declared(fi)
+                  let vals: for List (p in f.params): t[pos_of(p)]
+                  o && level_for(f, vals) == t0[fi]
+              if ok | [t] | []
+          List.append(& nested4)
+        // no completion produces what the crossing asked for: fill anyway and
+        // let the checker reject, rather than silently dropping the trial
+        if options.length() == 0
+        | random_fill(t0)
+        | options[math.random(options.length())]
+
+  // ---- compute every derived column that the crossing did not fix,
+  // shallowest first, so a factor derived from a derived factor reads the
+  // value just computed rather than whatever the skeleton left there
+  let order_by_depth:
+    let ds: for List (fi in 0..n_fac): [depth_of_at(fi), fi]
+    let sorted:
+      for values(acc = []) (d in 0..(1 + (for values(m = 0) (x in ds):
+                                            if x[0] > m | x[0] | m))):
+        acc ++ (for values(keep = []) (x in ds):
+                  if x[0] == d | List.add(keep, x[1]) | keep)
+    sorted
+  for values(seq = filled) (fi in order_by_depth):
+    let f = declared(fi)
+    if !f || f.params == [] || cross_pos(fi) >= 0
+    | seq
+    | for List (i in 0..geom.n_trials):
+        if has_level(geom, fi, i)
+        | set_at(seq[i], fi, level_for(f, window_vals(seq, i, f)))
+        | set_at(seq[i], fi, #false)
 
 fun sample_uniformly(exp, geom, extra, n, tries_left):
   if n == 0
@@ -270,7 +670,7 @@ fun sample_uniformly(exp, geom, extra, n, tries_left):
   | if tries_left == 0
     | error("synthesize_trials: #\'random gave up after many rejections;"
               ++ " the constraints may be too tight for rejection sampling")
-    | let cand = propose(geom)
+    | let cand = propose(geom, exp.design)
       if check_sequence(exp, cand, ~constraints: extra) == []
       | List.cons(cand, sample_uniformly(exp, geom, extra, n - 1, 10000))
       | sample_uniformly(exp, geom, extra, n, tries_left - 1)

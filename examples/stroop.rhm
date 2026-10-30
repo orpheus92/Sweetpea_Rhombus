@@ -1,22 +1,67 @@
 #lang rhombus
-// Figure 2 of the PESOSE/Rhombus proposal, as a running program.
-import: "../sweetpea.rhm" open
+// Figure 2 of the PESOSE/Rhombus proposal, as a running program: a Stroop
+// design with a derived factor, a crossing over it, and a minimum length.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
 
-factor color: ["red", "blue", "yellow", "brown"]
-factor word:  ["red", "blue", "yellow", "brown"]
+factor color: ["red", "blue", "green"]
+factor word:  ["red", "blue", "green"]
 
+// a derived factor: its level in a trial is a function of its parents'
+// levels in that trial, so it is never a free choice
 factor congruency(color, word):
   [derived con(a_color, a_word): a_color == a_word,
    derived inc(a_color, a_word): a_color != a_word]
 
 experiment plan:
-  ~design: [color, word, congruency]
-  ~cross: [color, congruency]
-  ~constraints: ["MinimumTrials(30)"]
+  ~design: [color, word, congruency]      // everything in a trial
+  ~cross: [color, congruency]             // what must be balanced
+  ~min_trials: 12                         // SweetPea's MinimumTrials
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
 
 println(plan.name)
 println("  design:      " ++ to_string(for List (f in plan.design): f.name))
 println("  cross:       " ++ to_string(for List (f in plan.cross): f.name))
-println("  constraints: " ++ to_string(plan.constraints))
-println("  con(red,red) = "
-          ++ to_string(congruency.levels[0].predicate("red", "red")))
+println("  min_trials:  " ++ to_string(plan.min_trials))
+println("")
+println("  crossing is colour x congruency = 6 combinations, and ~min_trials")
+println("  raises the design to " ++ to_string(g.n_trials)
+          ++ " trials, so each combination appears twice")
+println("")
+
+fun pad(str, n):
+  for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
+
+let trials = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
+for (i in 0..trials.length()):
+  let t = trials[i]
+  println("  " ++ (if i < 9 | " " | "") ++ to_string(i + 1)
+            ++ "   colour " ++ pad(t[0], 6) ++ "  word " ++ pad(t[1], 6)
+            ++ "  " ++ t[2])
+
+// The word is not free: it follows from the colour and the congruency the
+// crossing asked for. Nothing in the design states it.
+println("")
+let wrong:
+  for values(n = 0) (t in trials):
+    let want = if t[0] == t[1] | "con" | "inc"
+    if t[2] == want | n | n + 1
+println("  trials whose congruency does not match colour and word: "
+          ++ to_string(wrong))
+
+// Constraints do not care that congruency is derived: it is a factor with
+// levels like any other.
+println("")
+let no_runs = synthesize_trials(plan, 1,
+                                ~constraints: [no_repeats(congruency),
+                                               at_most_k_in_a_row(2, color)],
+                                ~strategy: #'iterate, ~solver: S)
+if no_runs.length() == 0
+| println("  no_repeats(congruency) + at_most_k_in_a_row(2, color): none")
+| println("  with no_repeats(congruency) and at_most_k_in_a_row(2, color):")
+  println("    congruency: " ++ to_string(for List (t in no_runs[0]): t[2]))
+  println("    colour:     " ++ to_string(for List (t in no_runs[0]): t[0]))

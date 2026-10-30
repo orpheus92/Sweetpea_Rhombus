@@ -1,0 +1,61 @@
+#lang rhombus
+// A constraint that holds inside each session, not across the whole study.
+//
+// In SweetPea this is a constraint list attached to the inner block of a
+// Nest. Here it is a combinator over any constraint: within_each asks the
+// constraint for its requirements against one segment and shifts them into
+// each segment in turn, so it works for constraints that do not exist yet.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor size:    ["small", "large"]
+factor session: ["s1", "s2"]
+
+// color is crossed, so each session shows both colors; size is in the
+// design but not the crossing, so it is free to repeat
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color]
+  ~within: session
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+
+fun show(label, cons):
+  println(label)
+  let got = synthesize_trials(plan, 3, ~constraints: cons,
+                              ~strategy: #'iterate, ~solver: S)
+  if got.length() == 0
+  | println("    no sequence satisfies this")
+  | for (s in got):
+      // print the sizes, with a bar at each session boundary
+      let line:
+        for values(acc = "") (i in 0..s.length()):
+          let sep = if i > 0 && i mod g.seg_len == 0 | " | " | " "
+          acc ++ sep ++ s[i][1]
+      println("   " ++ line)
+
+println(to_string(g.n_trials) ++ " trials in "
+          ++ to_string(g.n_trials / g.seg_len) ++ " sessions of "
+          ++ to_string(g.seg_len) ++ ", the bar marks a session boundary\n")
+
+show("no constraint: a size may repeat anywhere", [])
+show("\nwithin_each(no_repeats(size)): no repeat inside a session,\n"
+       ++ "but the first trial of a session may match the last of the one before",
+     [within_each(no_repeats(size))])
+show("\nno_repeats(size): no repeat anywhere, boundaries included",
+     [no_repeats(size)])
+
+// within_each works on a pin as readily as on a run-length rule, which is
+// the point of putting the scope in the requirements rather than in each
+// constraint
+show("\nwithin_each(pin(0, color, color.red)): every session opens on red",
+     [within_each(pin(0, color, color.red))])
+let one = synthesize_trials(plan, 1, ~constraints: [within_each(pin(0, color, color.red))],
+                            ~strategy: #'iterate, ~solver: S)[0]
+println("   the colors on that first sequence: "
+          ++ to_string(for List (t in one): t[0])
+          ++ "  -- red opens each session")

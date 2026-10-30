@@ -1,0 +1,84 @@
+#lang rhombus
+// ~within with more than one factor.
+//
+// SweetPea's Nest takes an outer BLOCK, not a factor, so the outer may
+// cross several factors. With a list, a segment holds one combination of
+// them constant, and it is the combinations -- not the individual levels --
+// that get crossed over the segments: two sessions against two groups gives
+// four segments, one for each pair.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor session: ["s1", "s2"]
+factor group:   ["g1", "g2"]
+
+experiment plan:
+  ~design: [color]
+  ~cross: [color]
+  ~within: [session, group]
+
+// the same thing with the segments in a fixed order
+experiment ordered:
+  ~design: [color]
+  ~cross: [color]
+  ~within: [session, group] ~in_order
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+
+fun show(label, exp, cons):
+  println(label)
+  let got = synthesize_trials(exp, 2, ~constraints: cons,
+                              ~strategy: #'iterate, ~solver: S)
+  if got.length() == 0
+  | println("   none")
+  | for (s in got):
+      let line:
+        for values(acc = "  ") (i in 0..s.length()):
+          let sep = if i > 0 && i mod g.seg_len == 0 | "  |  " | "  "
+          acc ++ sep ++ s[i][1] ++ "/" ++ s[i][2] ++ " " ++ s[i][0]
+      println("  " ++ line)
+
+println(to_string(g.n_trials) ++ " trials: "
+          ++ to_string(g.n_trials / g.seg_len) ++ " segments of "
+          ++ to_string(g.seg_len) ++ ", the bars marking the boundaries.")
+println("Each segment is one session/group pair, held constant, and the four")
+println("pairs are used once each.\n")
+
+show("~within: [session, group]", plan, [])
+show("\n~within: [session, group] ~in_order   -- the pairs in declared order",
+     ordered, [])
+show("\n... and within_each(pin(0, color, color.red)): every segment on red first",
+     ordered, [within_each(pin(0, color, color.red))])
+
+// One outer factor is the same form with a list of one, and reads the same
+// as it always did.
+experiment single:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session
+let gs = geometry_of(single)
+println("")
+println("one outer factor, for contrast: " ++ to_string(gs.n_trials)
+          ++ " trials in " ++ to_string(gs.n_trials / gs.seg_len) ++ " segments")
+for (s in synthesize_trials(single, 2, ~strategy: #'iterate, ~solver: S)):
+  println("    " ++ to_string(for List (t in s): t[1] ++ "/" ++ t[0]))
+
+// The checker reads the same requirements, so it can judge a sequence that
+// mixes two sessions inside one segment, or uses a pair twice.
+println("")
+let mixed = [["red", "s1", "g1"], ["blue", "s2", "g1"],
+             ["red", "s1", "g2"], ["blue", "s1", "g2"],
+             ["red", "s2", "g1"], ["blue", "s2", "g1"],
+             ["red", "s2", "g2"], ["blue", "s2", "g2"]]
+println("a segment that changes session halfway -> "
+          ++ to_string(check_sequence(plan, mixed)))
+let twice = [["red", "s1", "g1"], ["blue", "s1", "g1"],
+             ["red", "s1", "g1"], ["blue", "s1", "g1"],
+             ["red", "s2", "g1"], ["blue", "s2", "g1"],
+             ["red", "s2", "g2"], ["blue", "s2", "g2"]]
+println("the pair s1/g1 used for two segments -> "
+          ++ to_string(check_sequence(plan, twice)))

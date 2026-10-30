@@ -1,0 +1,154 @@
+#lang rhombus
+// ~cover, which is SweetPea's CoverAllCombinations: every realizable
+// combination of the listed factors must appear in some trial, and the
+// design grows to fit, rounded up so the crossing still gets whole passes.
+//
+// A factor outside the crossing is otherwise free, so nothing guarantees a
+// particular combination ever appears. That is what this supplies.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+factor color: ["red", "blue"]
+factor task:  ["go", "stop"]
+factor size:  ["small", "large"]
+
+// ============================== 1. exact, by brute force
+// Crossing on colour alone is 2 trials; covering the 4 colour/task pairs
+// needs 4, which is two whole passes. With 4 trials and 4 pairs each pair
+// appears exactly once, so the sequences are the 24 orderings of the pairs.
+experiment small:
+  ~design: [color, task]
+  ~cross: [color]
+  ~cover: [color, task]
+
+let gs = geometry_of(small)
+fun all_seqs(n):
+  if n == 0
+  | [[]]
+  | let tails = all_seqs(n - 1)
+    let nested:
+      for List (c in ["red", "blue"]):
+        for List (t in ["go", "stop"]):
+          for List (rest in tails): List.cons([c, t], rest)
+    List.append(& List.append(& nested))
+
+// `cols` says which two columns of a trial the pair refers to
+fun covers_at(s, pairs, cols):
+  for values(ok = #true) (p in pairs):
+    ok && (for values(found = #false) (t in s):
+             found || (t[cols[0]] == p[0] && t[cols[1]] == p[1]))
+fun covers(s, pairs): covers_at(s, pairs, [0, 1])
+
+let PAIRS = [["red", "go"], ["red", "stop"], ["blue", "go"], ["blue", "stop"]]
+let want1:
+  all_seqs(gs.n_trials).filter(
+    ~keep: fun (s):
+             covers(s, PAIRS)
+               && (for values(n = 0) (t in s): if t[0] == "red" | n + 1 | n) == 2)
+let got1 = synthesize_trials(small, 100, ~strategy: #'iterate, ~solver: S)
+println("covering 4 pairs with a crossing of 2: " ++ to_string(gs.n_trials)
+          ++ " trials")
+let r1 = gs.n_trials == 4 && got1.length() == want1.length()
+           && got1.length() == 24
+report("solver " ++ to_string(got1.length()) ++ " = brute force "
+         ++ to_string(want1.length()) ++ " (4! = 24)", r1)
+
+// ============================== 2. coverage is not vacuous
+// The same design without ~cover admits sequences that miss a pair.
+experiment uncovered:
+  ~design: [color, task]
+  ~cross: [color]
+  ~min_trials: 4
+let got2 = synthesize_trials(uncovered, 100, ~strategy: #'iterate, ~solver: S)
+let some_miss:
+  for values(found = #false) (s in got2): found || !covers(s, PAIRS)
+let r2 = got2.length() > got1.length() && some_miss
+report("without ~cover the same length admits " ++ to_string(got2.length())
+         ++ " sequences, some missing a pair", r2)
+
+// and the checker holds the line on a sequence somebody else wrote
+let missing = [["red", "go"], ["red", "go"], ["blue", "stop"], ["blue", "stop"]]
+let r3 = check_sequence(small, missing) != []
+           && check_sequence(small, got1[0]) == []
+report("the checker rejects a sequence that never shows red/stop", r3)
+
+// ============================== 3. a longer design, rounded up
+// Crossing colour x size is 4 trials; covering the 6 colour/task pairs needs
+// 6, rounded up to 8 so the crossing still comes out whole.
+factor task3: ["go", "stop", "wait"]
+experiment rounded:
+  ~design: [color, size, task3]
+  ~cross: [color, size]
+  ~cover: [color, task3]
+let gr = geometry_of(rounded)
+let SIX:
+  let nested:
+    for List (c in ["red", "blue"]):
+      for List (t in ["go", "stop", "wait"]): [c, t]
+  List.append(& nested)
+let got4 = synthesize_trials(rounded, 20, ~strategy: #'iterate, ~solver: S)
+// in this design the columns are colour, size, task -- task is the third
+let all_cover:
+  for values(ok = #true) (s in got4): ok && covers_at(s, SIX, [0, 2])
+// the crossing must still hold: each colour/size combination twice
+let crossing_ok:
+  for values(ok = #true) (s in got4):
+    for values(o = ok) (c in ["red", "blue"]):
+      for values(p = o) (z in ["small", "large"]):
+        let n:
+          for values(m = 0) (t in s): if t[0] == c && t[1] == z | m + 1 | m
+        p && n == 2
+let r4 = gr.n_trials == 8 && got4.length() == 20 && all_cover && crossing_ok
+report("6 pairs with a crossing of 4 gives " ++ to_string(gr.n_trials)
+         ++ " trials; every result covers all six and keeps the crossing", r4)
+
+// ============================== 4. combinations that cannot occur
+// congruency is determined by colour and word, so of the 8 colour/word/
+// congruency combinations only 4 can occur. Coverage must ask for those 4
+// and not for the impossible ones, or nothing would satisfy it.
+factor word: ["red", "blue"]
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+experiment derived_cover:
+  ~design: [color, word, congruency]
+  ~cross: [color]
+  ~cover: [color, word, congruency]
+let gd = geometry_of(derived_cover)
+let got5 = synthesize_trials(derived_cover, 100, ~strategy: #'iterate, ~solver: S)
+let FOUR = [["red", "red"], ["red", "blue"], ["blue", "red"], ["blue", "blue"]]
+let covers4:
+  for values(ok = #true) (s in got5):
+    for values(o = ok) (p in FOUR):
+      o && (for values(f = #false) (t in s): f || (t[0] == p[0] && t[1] == p[1]))
+let r5 = gd.n_trials == 4 && got5.length() > 0 && covers4
+report("8 combinations but only 4 realizable: " ++ to_string(gd.n_trials)
+         ++ " trials, and every result shows all four", r5)
+
+// ============================== 5. what must be refused
+factor weighted: ["a" ~weight 2, "b"]
+experiment bad_weight:
+  ~design: [color, weighted]
+  ~cross: [color]
+  ~cover: [color, weighted]
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+let msg = caught(fun (): synthesize_trials(bad_weight, 1, ~strategy: #'iterate,
+                                           ~solver: S))
+let r6 = msg && to_string(msg).contains("unweighted")
+report("a weighted level among the listed factors is refused", r6)
+when !r6
+| println("          got " ++ (if msg | to_string(msg) | "no error"))
+
+let results = [r1, r2, r3, r4, r5, r6]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "~cover: every realizable combination appears, and the design fits" | to_string(bad) ++ " FAILED")

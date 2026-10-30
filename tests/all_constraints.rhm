@@ -1,0 +1,149 @@
+#lang rhombus
+// Every declared constraint, encoder against checker, on three designs.
+//
+// The architectural claim is that cnf_of and holds_in cannot drift apart,
+// because each constraint is declared once and both read the same
+// requirements. tests/agreement.rhm states that for three constraints; this
+// states it for all of them, and adds a count worked out by hand, so that a
+// requirement which is wrong in the same way for both consumers is caught
+// too. Three numbers must agree on every line:
+//
+//   solver    the sequences synthesize_trials returns under the constraint
+//   checker   the sequences from the unconstrained enumeration that
+//             check_sequence accepts under the constraint
+//   expected  counted by hand, below
+//
+// Solver results are distinct and satisfy the automatic constraints, so each
+// lies in the enumeration; if each also passes the checker and the counts
+// match, the two sets are equal.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+let CAP = 60
+
+// returns whether this case agreed
+fun one(plan, all_seqs, label, cons, expect):
+  let got = synthesize_trials(plan, CAP, ~constraints: cons,
+                              ~strategy: #'iterate, ~solver: S)
+  let acc:
+    all_seqs.filter(~keep: fun (s): check_sequence(plan, s, ~constraints: cons) == [])
+  let sound:
+    for values(ok = #true) (s in got):
+      ok && check_sequence(plan, s, ~constraints: cons) == []
+  let ok = got.length() == expect && acc.length() == expect && sound
+  println((if ok | "  ok    " | "  FAIL  ") ++ label
+            ++ "  solver " ++ to_string(got.length())
+            ++ " checker " ++ to_string(acc.length())
+            ++ " expected " ++ to_string(expect)
+            ++ (if sound | "" | "   (a solver result fails the checker)"))
+  ok
+
+fun suite(name, plan, cases):
+  let all_seqs = synthesize_trials(plan, CAP, ~strategy: #'iterate, ~solver: S)
+  when all_seqs.length() >= CAP
+  | error("enumeration hit CAP; raise it")
+  println("\n" ++ name ++ " -- " ++ to_string(all_seqs.length())
+            ++ " sequences satisfy the design alone")
+  for values(bad = 0) (c in cases):
+    if one(plan, all_seqs, c[0], c[1], c[2]) | bad | bad + 1
+
+// ================================================ 1. a flat full crossing
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment flat:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+// 4 trials, one per combination, so the sequences are the 24 orderings of
+// {red/small, red/large, blue/small, blue/large}.
+let flat_cases:
+      [// the automatic constraints, named again: no-ops
+       ["consistent()                            ", [consistent()], 24],
+       ["crossed()                               ", [crossed()], 24],
+       // a level that never appears: the crossing needs it
+       ["exclude(color, \"red\")                   ", [exclude(color, "red")], 0],
+       // 2 of the 4 combinations are red, so half the orderings qualify
+       ["pin(0, color, \"red\")                    ", [pin(0, color, "red")], 12],
+       ["pin(3, size, \"small\")                   ", [pin(3, size, "small")], 12],
+       // colours must alternate: 2 patterns x 2 x 2 placements of the sizes
+       ["no_repeats(color)                       ", [no_repeats(color)], 8],
+       ["at_most_k_in_a_row(1, color)            ", [at_most_k_in_a_row(1, color)], 8],
+       // of the 6 ways to place 2 reds, 3 are non-adjacent and 3 adjacent
+       ["at_most_k_in_a_row(1, [color, \"red\"])   ",
+        [at_most_k_in_a_row(1, [color, "red"])], 12],
+       ["at_least_k_in_a_row(2, [color, \"red\"])  ",
+        [at_least_k_in_a_row(2, [color, "red"])], 12],
+       // only two reds, so a run of 2 is the longest there can be
+       ["exactly_k_in_a_row(2, [color, \"red\"])   ",
+        [exactly_k_in_a_row(2, [color, "red"])], 12],
+       // both colours in blocks: RRBB and BBRR
+       ["at_least_k_in_a_row(2, color)           ", [at_least_k_in_a_row(2, color)], 8],
+       ["exactly_k_in_a_row(2, color)            ", [exactly_k_in_a_row(2, color)], 8],
+       // three in a row is impossible with two of each, so this forbids nothing
+       ["at_most_k_in_a_row(2, size)             ", [at_most_k_in_a_row(2, size)], 24],
+       ["exactly_k_in_a_row(1, size)             ", [exactly_k_in_a_row(1, size)], 8],
+       // the crossing already fixes how often a level occurs
+       ["exactly_k(2, color, \"red\")              ", [exactly_k(2, color, "red")], 24],
+       ["exactly_k(1, color, \"red\")              ", [exactly_k(1, color, "red")], 0],
+       ["exactly_k(3, color, \"red\")              ", [exactly_k(3, color, "red")], 0],
+       // two constraints at once. If colour alternates and size alternates,
+       // the pair has period 2, so some combination appears twice -- which
+       // the crossing forbids. Nothing satisfies both.
+       ["no_repeats(color) + no_repeats(size)    ",
+        [no_repeats(color), no_repeats(size)], 0],
+       // whereas these two compose: of the 8 colour-alternating sequences,
+       // half open with a small
+       ["no_repeats(color) + pin(0, size, \"small\")",
+        [no_repeats(color), pin(0, size, "small")], 4]]
+let bad_flat = suite("flat: color x size", flat, flat_cases)
+
+// =================================================== 2. the same, nested
+factor session: ["s1", "s2"]
+experiment nested:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session
+
+// 2 segments of 2 trials. Each segment holds both colours, session is held
+// constant across a segment and differs between them: 2 session orders x 2
+// colour orders x 2 = 8.
+let nested_cases:
+      [// automatic under ~within, so naming them changes nothing
+       ["sustained(session)                      ", [sustained(session)], 8],
+       ["outer_crossed(session)                  ", [outer_crossed(session)], 8],
+       // the second colour of segment 1 fixes the first colour of segment 2
+       ["no_repeats(color)                       ", [no_repeats(color)], 4],
+       ["pin(0, color, \"red\")                    ", [pin(0, color, "red")], 4],
+       // session is sustained over 2 trials, so its runs are always 2
+       ["at_most_k_in_a_row(1, session)          ", [at_most_k_in_a_row(1, session)], 0],
+       ["at_least_k_in_a_row(2, session)         ", [at_least_k_in_a_row(2, session)], 8],
+       ["exactly_k_in_a_row(2, session)          ", [exactly_k_in_a_row(2, session)], 8],
+       ["exactly_k(2, session, \"s1\")             ", [exactly_k(2, session, "s1")], 8],
+       ["exactly_k(1, session, \"s1\")             ", [exactly_k(1, session, "s1")], 0],
+       // the outer crossing needs every session
+       ["exclude(session, \"s1\")                  ", [exclude(session, "s1")], 0]]
+let bad_nested = suite("nested: color within session", nested, nested_cases)
+
+// ========================================= 3. nested, segments in order
+experiment ordered:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session ~in_order
+
+// ~in_order fixes the session order, halving the 8 above. This is SweetPea's
+// Sequential, and the design it got wrong: sustain 2, three session levels
+// would be the broken regime (see tests/sequential_regime.rhm).
+let ordered_cases:
+      [["pin(0, color, \"red\")                    ", [pin(0, color, "red")], 2],
+       ["no_repeats(color)                       ", [no_repeats(color)], 2],
+       ["at_least_k_in_a_row(2, session)         ", [at_least_k_in_a_row(2, session)], 4],
+       ["at_most_k_in_a_row(1, session)          ", [at_most_k_in_a_row(1, session)], 0]]
+let bad_ordered = suite("nested, ~in_order", ordered, ordered_cases)
+
+let bad = bad_flat + bad_nested + bad_ordered
+let verdict = if bad == 0 | "solver, checker and hand count agree everywhere" | to_string(bad) ++ " FAILED"
+println("")
+println(verdict)

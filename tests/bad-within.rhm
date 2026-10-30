@@ -1,0 +1,17 @@
+#lang rhombus
+// A ~within factor must not also be in ~design: it joins the design on its
+// own terms, held constant across each segment. Listing it twice would give
+// it two places in a trial. With a list of ~within factors, every one of
+// them is checked.
+import: "../sweetpea.rhm" open
+
+factor color:   ["red", "blue"]
+factor session: ["s1", "s2"]
+factor group:   ["g1", "g2"]
+
+experiment plan:
+  ~design: [color, group]
+  ~cross: [color]
+  ~within: [session, group]
+
+println("if this prints, the duplicate ~within factor was accepted")

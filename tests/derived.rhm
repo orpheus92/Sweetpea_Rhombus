@@ -1,0 +1,158 @@
+#lang rhombus
+// Derived factors, encoded. A derived factor's level is a function of its
+// parents' levels in the same trial, which SweetPea states as the Derivation
+// constraint and applies automatically.
+//
+// The oracle recomputes the predicate off a finished sequence and shares no
+// code with the encoder or the checker.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+// ------------------------------------------------------------- oracle
+// column 0 is color, 1 is word, 2 is congruency
+fun derived_right(s):
+  for values(ok = #true) (t in s):
+    let want = if t[0] == t[1] | "con" | "inc"
+    ok && t[2] == want
+
+// =============================== 1. crossing on the parents
+experiment plan:
+  ~design: [color, word, congruency]
+  ~cross: [color, word]
+
+let g = geometry_of(plan)
+let all_seqs = synthesize_trials(plan, 100, ~strategy: #'iterate, ~solver: S)
+println(to_string(g.n_trials) ++ " trials, " ++ to_string(all_seqs.length())
+          ++ " sequences (the 24 orderings of the four colour/word pairs)")
+let r1 = all_seqs.length() == 24
+           && (for values(o = #true) (s in all_seqs): o && derived_right(s))
+report("congruency is the predicate's value in every trial of all 24", r1)
+
+// the checker must reject a sequence whose derived column is wrong
+let tampered:
+  for List (i in 0..all_seqs[0].length()):
+    let t = all_seqs[0][i]
+    if i == 0 | [t[0], t[1], (if t[2] == "con" | "inc" | "con")] | t
+let r2 = check_sequence(plan, tampered) != [] && !derived_right(tampered)
+report("a sequence with one congruency flipped is rejected", r2)
+
+fun case(label, cons, expect):
+  let got = synthesize_trials(plan, 100, ~constraints: cons,
+                              ~strategy: #'iterate, ~solver: S)
+  let acc:
+    all_seqs.filter(~keep: fun (s): check_sequence(plan, s, ~constraints: cons) == [])
+  let ok = got.length() == expect && acc.length() == expect
+  report(label ++ "  solver " ++ to_string(got.length())
+           ++ " checker " ++ to_string(acc.length())
+           ++ " expected " ++ to_string(expect), ok)
+  ok
+
+println("")
+// constraints name a derived level like any other
+let r3 = case("exactly_k(2, congruency, \"con\")   implied  ",
+              [exactly_k(2, congruency, "con")], 24)
+let r4 = case("exclude(congruency, congruency.inc)        ",
+              [exclude(congruency, congruency.inc)], 0)
+// congruency must alternate: 2 patterns x 2 orders of the cons x 2 of the incs
+let r5 = case("no_repeats(congruency)                     ",
+              [no_repeats(congruency)], 8)
+// trial 0 must be one of the two congruent pairs
+let r6 = case("pin(0, congruency, congruency.con)         ",
+              [pin(0, congruency, congruency.con)], 12)
+
+// =============================== 2. crossing on the derived factor
+// The Stroop shape: balance colour against congruency and let the word
+// follow. Four trials, the orderings of the four colour/congruency pairs.
+experiment stroop:
+  ~design: [color, word, congruency]
+  ~cross: [color, congruency]
+
+let st = synthesize_trials(stroop, 100, ~strategy: #'iterate, ~solver: S)
+println("")
+println("crossed on the derived factor: " ++ to_string(geometry_of(stroop).n_trials)
+          ++ " trials, " ++ to_string(st.length()) ++ " sequences")
+let pairs_once:
+  for values(ok = #true) (s in st):
+    let seen:
+      for List (t in s): t[0] ++ "/" ++ t[2]
+    let distinct:
+      for values(o = #true) (x in seen):
+        o && (for values(n = 0) (y in seen): if x == y | n + 1 | n) == 1
+    ok && distinct
+let r7 = st.length() == 24
+           && (for values(o = #true) (s in st): o && derived_right(s))
+           && pairs_once
+report("every sequence derives the word correctly and uses each"
+         ++ " colour/congruency pair once", r7)
+
+// =============================== 3. predicates that cannot both hold
+factor overlapping(color, word):
+  [derived x(a, b): a == b,
+   derived y(a, b): #true]
+experiment broken:
+  ~design: [color, word, overlapping]
+  ~cross: [color, word]
+
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+let msg = caught(fun (): synthesize_trials(broken, 1, ~strategy: #'iterate, ~solver: S))
+let r8 = msg && to_string(msg).contains("exclusive")
+report("a derived factor whose levels overlap is refused", r8)
+when !r8
+| println("          got " ++ (if msg | to_string(msg) | "no error"))
+
+// =============================== 4. a predicate no level satisfies
+// Nothing is derived for (red, blue) or (blue, red), so those parent
+// combinations cannot occur -- which the crossing here requires, so the
+// design has no solution. This is how SweetPea excludes through a derived
+// factor, and it must come out unsatisfiable rather than wrong.
+factor only_congruent(color, word):
+  [derived both_red(a, b): a == "red" && b == "red"]
+experiment partial:
+  ~design: [color, word, only_congruent]
+  ~cross: [color, word]
+
+let pt = synthesize_trials(partial, 10, ~strategy: #'iterate, ~solver: S)
+let r9 = pt.length() == 0
+report("a derived factor covering only some parent combinations excludes the"
+         ++ " rest: " ++ to_string(pt.length()) ++ " sequences", r9)
+
+// but with the crossing narrowed to what is realizable, it works
+experiment narrowed:
+  ~design: [color, word, only_congruent]
+  ~cross: [only_congruent]
+let nr = synthesize_trials(narrowed, 10, ~strategy: #'iterate, ~solver: S)
+let r10 = nr.length() > 0
+            && (for values(o = #true) (s in nr):
+                  for values(p = o) (t in s): p && t[0] == "red" && t[1] == "red")
+report("and holds the parents to the only combination it covers ("
+         ++ to_string(nr.length()) ++ " sequences)", r10)
+
+// #'random reaches the same sequences by the other road: it samples the
+// basic factors and computes the derived ones, so congruency is never
+// guessed. A derived factor in the crossing is then settled by rejection.
+let rnd = synthesize_trials(plan, 12, ~strategy: #'random)
+let r11 = rnd.length() == 12
+            && (for values(ok = #true) (s in rnd):
+                  ok && derived_right(s) && check_sequence(plan, s) == [])
+report("#'random computes the derived column too, on " ++ to_string(rnd.length())
+         ++ " candidates", r11)
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "derived factors: encoder, checker and predicate agree" | to_string(bad) ++ " FAILED")

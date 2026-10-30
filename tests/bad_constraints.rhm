@@ -1,0 +1,123 @@
+#lang rhombus
+// A constraint whose arguments do not fit the design must be refused, and
+// refused the same way by both consumers.
+//
+// Declaring a constraint once stops cnf_of and holds_in from disagreeing
+// about what it means. It does not stop an atom from naming a trial, factor
+// or level the design does not have, and before reqs_of validated them the
+// two consumers behaved differently when one did: an atom for a trial
+// outside the sequence had the solver allocate a variable for a trial that
+// does not exist and return every sequence, while the checker crashed
+// indexing the sequence. reqs_of refuses such an atom now, whichever
+// consumer asks.
+//
+// A trial index the USER writes is a different matter: SweetPea documents an
+// out-of-range Pin as a design with no solution, so pin resolves the index
+// itself and asks for something unsatisfiable instead of raising. Both cases
+// are below.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let S = "cryptominisat5"
+let seq = [["red", "large"], ["blue", "large"], ["blue", "small"], ["red", "small"]]
+
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e:
+      Exn.message(e)
+
+// the message must mention `want`, so that a refusal for the wrong reason
+// does not pass
+fun refused(label, want, thunk):
+  let msg = caught(thunk)
+  let ok = msg && to_string(msg).contains(want)
+  println((if ok | "  ok    " | "  FAIL  ") ++ label)
+  when !ok
+  | println("          expected a refusal mentioning " ++ to_string(want)
+              ++ ", got " ++ (if msg | to_string(msg) | "no error at all"))
+  ok
+
+fun solver(cs): fun (): synthesize_trials(plan, 60, ~constraints: cs,
+                                          ~strategy: #'iterate, ~solver: S)
+fun checker(cs): fun (): check_sequence(plan, seq, ~constraints: cs)
+
+println("an atom outside the geometry: both consumers, same refusal")
+// built by hand, since no constraint will emit one any more
+let off_the_end = Constraint("handmade", fun (g): [at_least(1, [Lev(99, 0, 0)])])
+let r1 = refused("an atom for trial 99   solver ", "4 trials",
+                 solver([off_the_end]))
+let r2 = refused("an atom for trial 99   checker", "4 trials",
+                 checker([off_the_end]))
+
+println("\narguments that cannot mean anything")
+let r3 = refused("exclude(color, \"pink\")        no such level  ",
+                 "no level pink", solver([exclude(color, "pink")]))
+let r4 = refused("at_most_k_in_a_row(0, color)  k below 1      ",
+                 "at least 1", solver([at_most_k_in_a_row(0, color)]))
+let r5 = refused("at_most_k_in_a_row(-1, color) k negative     ",
+                 "at least 1", solver([at_most_k_in_a_row(-1, color)]))
+let r6 = refused("at_least_k_in_a_row(0, color) k below 1      ",
+                 "at least 1", solver([at_least_k_in_a_row(0, color)]))
+let r7 = refused("exactly_k_in_a_row(0, color)  k below 1      ",
+                 "at least 1", solver([exactly_k_in_a_row(0, color)]))
+let r8 = refused("exactly_k(-1, color, \"red\")   k negative     ",
+                 "negative", solver([exactly_k(-1, color, "red")]))
+let r9 = refused("at_most_k_in_a_row(1, [color]) bad target    ",
+                 "factor or a [factor, level] pair",
+                 solver([at_most_k_in_a_row(1, [color])]))
+
+// Asking for more of a level than there are trials is a design with no
+// solution, which SweetPea reports as no sequences rather than an error.
+// So this one must NOT be refused -- it must come back empty, and the
+// checker must reject the sequence rather than crash on it.
+println("\nmore than the design can give: unsatisfiable, not an error")
+let far = synthesize_trials(plan, 60, ~constraints: [pin(99, color, "red")],
+                            ~strategy: #'iterate, ~solver: S)
+let far_chk = check_sequence(plan, seq, ~constraints: [pin(99, color, "red")])
+let r12 = far.length() == 0 && far_chk != []
+println((if r12 | "  ok    " | "  FAIL  ")
+          ++ "pin(99, color, \"red\")        solver " ++ to_string(far.length())
+          ++ " sequences, checker " ++ to_string(far_chk))
+let got = synthesize_trials(plan, 60, ~constraints: [exactly_k(99, color, "red")],
+                            ~strategy: #'iterate, ~solver: S)
+let chk = check_sequence(plan, seq, ~constraints: [exactly_k(99, color, "red")])
+let r10 = got.length() == 0 && chk != []
+println((if r10 | "  ok    " | "  FAIL  ")
+          ++ "exactly_k(99, color, \"red\")   solver " ++ to_string(got.length())
+          ++ " sequences, checker " ++ to_string(chk))
+
+// and the valid forms must still work, or the checks above prove nothing
+println("\nthe same constraints, within range")
+// -1 is the last trial, as in SweetPea
+let neg = synthesize_trials(plan, 60, ~constraints: [pin(-1, color, "red")],
+                            ~strategy: #'iterate, ~solver: S)
+let same = synthesize_trials(plan, 60, ~constraints: [pin(3, color, "red")],
+                             ~strategy: #'iterate, ~solver: S)
+let r13 = neg.length() == 12 && neg.length() == same.length()
+println((if r13 | "  ok    " | "  FAIL  ")
+          ++ "pin(-1, ...) is pin(3, ...) on four trials: "
+          ++ to_string(neg.length()) ++ " = " ++ to_string(same.length()))
+let a = synthesize_trials(plan, 60, ~constraints: [pin(3, color, "red")],
+                          ~strategy: #'iterate, ~solver: S)
+let b = synthesize_trials(plan, 60, ~constraints: [at_most_k_in_a_row(1, color)],
+                          ~strategy: #'iterate, ~solver: S)
+let r11 = a.length() == 12 && b.length() == 8
+println((if r11 | "  ok    " | "  FAIL  ")
+          ++ "pin(3, ...) -> " ++ to_string(a.length())
+          ++ " (12), at_most_k_in_a_row(1, color) -> "
+          ++ to_string(b.length()) ++ " (8)")
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "every bad argument refused, every good one accepted" | to_string(bad) ++ " FAILED")

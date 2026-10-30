@@ -1,0 +1,105 @@
+#lang rhombus
+// The derived-factor shapes past a plain within-trial predicate:
+//
+//   a chain      a derived factor whose parent is itself derived
+//   ~stride      a level every s trials rather than every trial
+//   ~start       where its levels begin
+//   else         the level for whatever the others do not match
+//
+// All four are SweetPea features: a derived parent (its Factor._get_depth),
+// Window's stride and start, and ElseLevel.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+
+// one deep: a predicate over two basic factors in the same trial
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+
+// two deep: a window over congruency, which is itself derived. So this asks
+// a question about a pair of trials, about a factor that was never written
+// down in any trial.
+factor switched(congruency) ~width 2:
+  [derived stay(prev, now): prev == now,
+   derived flip(prev, now): prev != now]
+
+// an else level: bold for one combination, other for the rest, with no
+// predicate written for "the rest"
+factor emphasis(color, word):
+  [derived bold(c, w): c == "red" && w == "red",
+   else plain]
+
+// a stride: scored every other trial, starting at trial 1
+factor alternating(color) ~width 2 ~stride 2:
+  [derived same(prev, now): prev == now,
+   derived diff(prev, now): prev != now]
+
+experiment plan:
+  ~design: [color, word, congruency, switched, emphasis, alternating]
+  ~cross: [color, word]
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+
+fun pad(str, n):
+  for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
+fun cell(v, n): pad(if v == #false | "-" | v, n)
+
+println("4 trials: colour x word crossed, and four derived factors over them.")
+println("")
+println("Each factor's levels begin where everything it reads has a value:")
+for (i in 0..g.factors.length()):
+  println("   " ++ pad(g.factors[i].name, 12)
+            ++ " begins at trial " ++ to_string(g.preamble[i])
+            ++ ", then every " ++ to_string(g.stride[i]) ++ " trial(s)")
+println("")
+println("   trial  colour  word    congruency  switched  emphasis  alternating")
+let one = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
+for (i in 0..one.length()):
+  let t = one[i]
+  println("   " ++ pad(to_string(i), 7) ++ cell(t[0], 8) ++ cell(t[1], 8)
+            ++ cell(t[2], 12) ++ cell(t[3], 10) ++ cell(t[4], 10)
+            ++ cell(t[5], 10))
+println("")
+println("   switched has no value on trial 0: it compares two congruency")
+println("   values and there is only one by then. alternating is scored on")
+println("   trials 1 and 3 only, because its stride is 2.")
+
+// Constraints do not care how deep a factor is, or that it is scored on
+// only some trials. It is a factor with levels.
+println("")
+println("the same design, asking for the deeper factor to alternate:")
+let alt = synthesize_trials(plan, 1, ~constraints: [no_repeats(switched)],
+                            ~strategy: #'iterate, ~solver: S)
+if alt.length() == 0
+| println("   none")
+| for (i in 0..alt[0].length()):
+    let t = alt[0][i]
+    println("   " ++ pad(to_string(i), 7) ++ cell(t[0], 8) ++ cell(t[1], 8)
+              ++ cell(t[2], 12) ++ cell(t[3], 10))
+
+// And the checker reads the same requirements, so it judges every column,
+// however deep.
+println("")
+let tampered:
+  for List (i in 0..one.length()):
+    let t = one[i]
+    if i == 2
+    | [t[0], t[1], t[2], (if t[3] == "stay" | "flip" | "stay"), t[4], t[5]]
+    | t
+println("flipping `switched` on trial 2 gives: "
+          ++ to_string(check_sequence(plan, tampered)))
+println("flipping `emphasis` on trial 0 gives: "
+          ++ to_string(check_sequence(plan,
+                                      for List (i in 0..one.length()):
+                                        let t = one[i]
+                                        if i == 0
+                                        | [t[0], t[1], t[2], t[3],
+                                           (if t[4] == "bold" | "plain" | "bold"),
+                                           t[5]]
+                                        | t)))

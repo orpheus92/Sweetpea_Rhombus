@@ -1,0 +1,105 @@
+#lang rhombus
+// ~within with more than one factor. SweetPea's Nest takes an outer BLOCK,
+// not a factor, so the outer may cross several factors; then a segment holds
+// one combination of them constant, and the combinations -- not the
+// individual levels -- are what gets crossed over the segments.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+factor color:   ["red", "blue"]
+factor session: ["s1", "s2"]
+factor group:   ["g1", "g2"]
+
+experiment plan:
+  ~design: [color]
+  ~cross: [color]
+  ~within: [session, group]
+
+let g = geometry_of(plan)
+let r1 = g.n_trials == 8 && g.seg_len == 2 && g.sustain == [1, 2, 2]
+report("2 colours inside 2 sessions x 2 groups: " ++ to_string(g.n_trials)
+         ++ " trials in segments of " ++ to_string(g.seg_len), r1)
+
+// what a correct sequence looks like, checked without the encoder:
+// each segment constant in both outer factors, and the four combinations
+// each used once
+fun outer_ok(s):
+  let n_seg = s.length() / 2
+  let pairs:
+    for List (seg in 0..n_seg):
+      let a = s[seg * 2]
+      let b = s[seg * 2 + 1]
+      if a[1] == b[1] && a[2] == b[2] | a[1] ++ a[2] | "MIXED"
+  let no_mixed: !(pairs.contains("MIXED"))
+  let all_four:
+    for values(ok = #true) (want in ["s1g1", "s1g2", "s2g1", "s2g2"]):
+      ok && (for values(n = 0) (p in pairs): if p == want | n + 1 | n) == 1
+  no_mixed && all_four
+
+let got = synthesize_trials(plan, 40, ~strategy: #'iterate, ~solver: S)
+let r2 = got.length() == 40
+           && (for values(ok = #true) (s in got): ok && outer_ok(s))
+report("all " ++ to_string(got.length())
+         ++ " results hold each segment constant and use each"
+         ++ " session/group combination once", r2)
+
+// the whole count, by hand: 4! orders of the four outer combinations times
+// 2^4 orders of the colours inside the four segments
+let all_of_them = synthesize_trials(plan, 500, ~strategy: #'iterate, ~solver: S)
+let r3 = all_of_them.length() == 384
+report("the design admits " ++ to_string(all_of_them.length())
+         ++ " sequences (4! x 2^4 = 384)", r3)
+
+// ~in_order fixes which segment gets which combination, in the order the
+// factors were declared, so only the inner orderings remain: 2^4 = 16
+experiment ordered:
+  ~design: [color]
+  ~cross: [color]
+  ~within: [session, group] ~in_order
+let got2 = synthesize_trials(ordered, 100, ~strategy: #'iterate, ~solver: S)
+let lex_ok:
+  for values(ok = #true) (s in got2):
+    let pairs: for List (seg in 0..4): s[seg * 2][1] ++ s[seg * 2][2]
+    ok && pairs == ["s1g1", "s1g2", "s2g1", "s2g2"]
+let r4 = got2.length() == 16 && lex_ok
+report("~in_order leaves " ++ to_string(got2.length())
+         ++ " sequences (2^4 = 16), the combinations in declared order", r4)
+
+// a constraint scoped to a segment still works over a multi-factor nest
+let scoped = [within_each(pin(0, color, color.red))]
+let got3 = synthesize_trials(ordered, 100, ~constraints: scoped,
+                             ~strategy: #'iterate, ~solver: S)
+let r5 = got3.length() == 1
+           && (for values(ok = #true) (seg in 0..4):
+                 ok && got3[0][seg * 2][0] == "red")
+report("within_each(pin(0, ...)) over the nest: " ++ to_string(got3.length())
+         ++ " sequence, every segment opening on red", r5)
+
+// #'random has to respect the same structure
+let rnd = synthesize_trials(plan, 20, ~strategy: #'random)
+let r6 = rnd.length() == 20
+           && (for values(ok = #true) (s in rnd):
+                 ok && outer_ok(s) && check_sequence(plan, s) == [])
+report("#'random produces " ++ to_string(rnd.length())
+         ++ " candidates with the same structure", r6)
+
+// one outer factor still behaves exactly as before
+experiment single:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session
+let gs = geometry_of(single)
+let got4 = synthesize_trials(single, 100, ~strategy: #'iterate, ~solver: S)
+let r7 = gs.n_trials == 4 && got4.length() == 8
+report("one ~within factor is unchanged: " ++ to_string(gs.n_trials)
+         ++ " trials, " ++ to_string(got4.length()) ++ " sequences (8)", r7)
+
+let results = [r1, r2, r3, r4, r5, r6, r7]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "~within crosses the outer combinations, one factor or several" | to_string(bad) ++ " FAILED")

@@ -1,0 +1,96 @@
+#lang rhombus
+// within_each: a constraint that holds inside each segment, not across the
+// whole sequence. This is what SweetPea expresses by attaching a constraint
+// list to the inner block of a Nest.
+//
+// The design: color is crossed, so each segment holds both colors once;
+// size is in the design but not the crossing, so it is free, and a size CAN
+// repeat inside a segment. That is what makes the two scopes differ.
+//
+//   2 session levels x 2 colors = 4 trials, 2 segments of 2
+//   sequences = 2 session orders x 2 colour orders per segment x 2^4 sizes
+//             = 2 x 4 x 16 = 128
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor size:    ["small", "large"]
+factor session: ["s1", "s2"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color]
+  ~within: session
+
+let S = "cryptominisat5"
+let CAP = 200
+let all_seqs = synthesize_trials(plan, CAP, ~strategy: #'iterate, ~solver: S)
+println(to_string(all_seqs.length()) ++ " sequences satisfy the design alone (128)")
+
+fun case(label, cons, expect):
+  let got = synthesize_trials(plan, CAP, ~constraints: cons,
+                              ~strategy: #'iterate, ~solver: S)
+  let acc:
+    all_seqs.filter(~keep: fun (s): check_sequence(plan, s, ~constraints: cons) == [])
+  let ok = got.length() == expect && acc.length() == expect
+  println((if ok | "  ok    " | "  FAIL  ") ++ label
+            ++ "  solver " ++ to_string(got.length())
+            ++ " checker " ++ to_string(acc.length())
+            ++ " expected " ++ to_string(expect))
+  ok
+
+// sizes must differ within a segment: 2 of the 4 size pairs per segment, so
+// 4 of 16 size assignments survive -> 2 x 4 x 4 = 32
+let r1 = case("within_each(no_repeats(size))         ",
+              [within_each(no_repeats(size))], 32)
+// the same rule stated the other way
+let r2 = case("within_each(at_most_k_in_a_row(1,size))",
+              [within_each(at_most_k_in_a_row(1, size))], 32)
+// sizes must alternate across all four trials: 2 of 16 -> 2 x 4 x 2 = 16
+let r3 = case("no_repeats(size)   whole sequence      ",
+              [no_repeats(size)], 16)
+// a pin inside each segment fixes the first trial of both sessions
+let r4 = case("within_each(pin(0, color, color.red))  ",
+              [within_each(pin(0, color, color.red))], 32)
+// the unscoped pin fixes only trial 0: colour order of segment 1 only
+let r5 = case("pin(0, color, color.red)              ",
+              [pin(0, color, color.red)], 64)
+// one segment's worth of trials, so this is the whole sequence again
+let r6 = case("within_each of a rule already global   ",
+              [within_each(exclude(color, color.red))], 0)
+
+// The scoped rule must be strictly weaker here: everything the global rule
+// admits, the scoped one admits too, and something more.
+println("")
+let glob = synthesize_trials(plan, CAP, ~constraints: [no_repeats(size)],
+                             ~strategy: #'iterate, ~solver: S)
+let scoped_ok:
+  for values(o = #true) (s in glob):
+    o && check_sequence(plan, s, ~constraints: [within_each(no_repeats(size))]) == []
+let crosses_boundary:
+  for values(found = #false) (s in all_seqs):
+    let a = check_sequence(plan, s, ~constraints: [within_each(no_repeats(size))]) == []
+    let b = check_sequence(plan, s, ~constraints: [no_repeats(size)]) == []
+    found || (a && !b)
+let r7 = scoped_ok && crosses_boundary
+println((if r7 | "  ok    " | "  FAIL  ")
+          ++ "scoped is strictly weaker: global results all pass it ("
+          ++ to_string(scoped_ok) ++ "), and a sequence repeats across a boundary ("
+          ++ to_string(crosses_boundary) ++ ")")
+
+// A trial index that fits the whole sequence but not one segment is out of
+// range for the segment, and an out-of-range pin is a design with no
+// solution, so this is unsatisfiable rather than an error -- and it is the
+// segment, not the sequence, that decides.
+let r8 = case("within_each(pin(3, color, color.red))  ",
+              [within_each(pin(3, color, color.red))], 0)
+// -1 within a segment is that segment's last trial, so this pins trial 1
+// of each segment
+let r9 = case("within_each(pin(-1, color, color.red)) ",
+              [within_each(pin(-1, color, color.red))], 32)
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r9]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "within_each scopes every constraint it is given" | to_string(bad) ++ " FAILED")

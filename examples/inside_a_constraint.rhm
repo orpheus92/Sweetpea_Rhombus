@@ -25,11 +25,17 @@ fun show(c, seq):
     println("      atoms:   " ++ to_string(r.atoms))
   // the SAME requirements, through each consumer
   let (var_of, n_vars, w, b) = numbering(geom)
-  let cls:
-    let nested: for List (r in reqs): cnf_of(r, var_of)
-    List.append(& nested)
+  // A requirement may allocate helper variables -- a cardinality bound
+  // needs them -- so cnf_of takes the next free variable number and
+  // returns the one after the ones it used.
+  let (cls, next_fresh):
+    for values(acc = [], f = n_vars + 1) (r in reqs):
+      let (cs, f2) = cnf_of(r, var_of, f)
+      values(acc ++ cs, f2)
+  let helpers = next_fresh - (n_vars + 1)
   println("  cnf_of  -> " ++ to_string(cls.length()) ++ " clause(s), e.g. "
             ++ to_string(cls.take(math.min(3, cls.length()))))
+  println("             " ++ to_string(helpers) ++ " helper variable(s)")
   let is_set = checker_for(geom, seq)
   let verdict:
     for values(o = #true) (r in reqs): o && holds_in(r, is_set)
@@ -39,3 +45,7 @@ let seq = [["red","large"], ["blue","large"], ["blue","small"], ["red","small"]]
 show(pin(0, color, "red"), seq)
 show(exclude(size, "small"), seq)
 show(consistent(), seq)
+// a bound that is neither 0, 1 nor all: this is the one that needs helpers
+show(exactly_k(2, color, "red"), seq)
+// and a run-length constraint, which is plain clauses over Not literals
+show(at_least_k_in_a_row(2, [color, "red"]), seq)

@@ -1,0 +1,24 @@
+#lang rhombus
+// A misspelled LEVEL, in a constraint that is never reached. Like
+// tests/bad-name.rhm for factors, this must fail to COMPILE.
+//
+// `factor` binds each level name inside the factor's namespace, so
+// `color.pink` is an identifier that does not resolve. SweetPea's
+// Exclude((color, "pink")) is a well-formed call that builds a perfectly
+// good constraint about a level no trial can ever have.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor size:  ["small", "large"]
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+fun never_called():
+  synthesize_trials(plan, 1, ~constraints: [exclude(color, color.pink)],
+                    ~strategy: #'iterate, ~solver: "cryptominisat5")
+
+println("if this prints, the typo was not caught")

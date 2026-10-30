@@ -38,3 +38,9 @@ let bad = [["red","small"],["blue","small"],["green","small"],
            ["red","large"],["blue","large"],["green","large"]]
 println("  three smalls in a row -> checker says "
           ++ to_string(check_sequence(plan, bad, ~constraints: c2)))
+
+println("\nexactly_k_multiple_in_a_row(2, [color, \"red\"])  -- runs of even length")
+println("  red appears twice here, so its one run must be exactly 2")
+for (s in synthesize_trials(plan, 2, ~constraints: [exactly_k_multiple_in_a_row(2, [color, "red"])],
+                            ~strategy: #'iterate, ~solver: S)):
+  println("  " ++ to_string(colours(s)))

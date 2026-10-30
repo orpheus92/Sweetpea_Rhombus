@@ -1,0 +1,206 @@
+#lang rhombus
+// Window derived levels: SweetPea's Transition (width 2) and Window (width w).
+//
+// A level that reads the current trial and the preceding width-1 brings a
+// preamble with it: the factor has no level at all for the first width-1
+// trials of a segment. If such a factor is crossed, the segment grows by the
+// preamble, since the crossing can only use trials where every crossed
+// factor has a level.
+//
+// The oracle recomputes the derived column from the parent column alone and
+// brute-forces the whole design, so it shares nothing with the encoder.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+
+// SweetPea's Transition: did the colour repeat?
+factor repetition(color) ~width 2:
+  [derived same(prev, now): prev == now,
+   derived switch(prev, now): prev != now]
+
+// SweetPea's Window with width 3
+factor streak(color) ~width 3:
+  [derived run3(a, b, c): a == b && b == c,
+   derived mixed(a, b, c): !(a == b && b == c)]
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+// --------------------------------------------------------------- oracle
+fun all_colors(n):
+  if n == 0
+  | [[]]
+  | let tails = all_colors(n - 1)
+    let nested:
+      for List (c in ["red", "blue"]):
+        for List (t in tails): List.cons(c, t)
+    List.append(& nested)
+
+// the derived column for a width-w predicate over one parent
+fun derive(cs, w, f):
+  for List (i in 0..cs.length()):
+    if i < w - 1
+    | #false
+    | f(for List (o in 0..w): cs[i - (w - 1) + o])
+
+fun count_where(lst, p):
+  for values(n = 0) (x in lst): if p(x) | n + 1 | n
+
+// each (colour, derived) pair exactly once among the trials that have a value
+fun crossed_once(cs, ds, w, levels):
+  for values(ok = #true) (c in ["red", "blue"]):
+    for values(o = ok) (l in levels):
+      let n:
+        for values(m = 0) (i in (w - 1)..cs.length()):
+          if cs[i] == c && ds[i] == l | m + 1 | m
+      o && n == 1
+
+// ============================================= 1. Transition, crossed
+experiment trans:
+  ~design: [color, repetition]
+  ~cross: [color, repetition]
+
+let gt = geometry_of(trans)
+fun rep_of(window): if window[0] == window[1] | "same" | "switch"
+let want1:
+  all_colors(gt.n_trials).filter(
+    ~keep: fun (cs):
+             crossed_once(cs, derive(cs, 2, rep_of), 2, ["same", "switch"]))
+let got1 = synthesize_trials(trans, 200, ~strategy: #'iterate, ~solver: S)
+println("Transition crossed with colour: " ++ to_string(gt.n_trials)
+          ++ " trials, preamble " ++ to_string(gt.preamble[1])
+          ++ " (4 combinations + 1)")
+let sound1:
+  for values(ok = #true) (s in got1):
+    let cs = for List (t in s): t[0]
+    let ds = for List (t in s): t[1]
+    ok && ds == derive(cs, 2, rep_of)
+let r1 = got1.length() == want1.length() && sound1
+report("solver " ++ to_string(got1.length()) ++ " = brute force "
+         ++ to_string(want1.length())
+         ++ ", and every derived column matches the predicate", r1)
+
+// the preamble trial has no value, in every result
+let r2:
+  for values(ok = #true) (s in got1): ok && s[0][1] == #false
+report("the first trial of every result has no repetition value", r2)
+
+// the checker must reject a value where there should be none, and a wrong one
+let one = got1[0]
+let filled:
+  for List (i in 0..one.length()):
+    if i == 0 | [one[0][0], "same"] | one[i]
+let flipped:
+  for List (i in 0..one.length()):
+    if i == 2 | [one[2][0], (if one[2][1] == "same" | "switch" | "same")] | one[i]
+let r3 = check_sequence(trans, one) == []
+           && check_sequence(trans, filled) != []
+           && check_sequence(trans, flipped) != []
+report("the checker accepts the result, and rejects a filled preamble and a"
+         ++ " flipped transition", r3)
+
+// ============================================= 2. constraints over it
+// A window factor is a factor: constraints need no special case. Brute force
+// the same design with the transitions forced to alternate.
+let cons = [no_repeats(repetition)]
+let want4:
+  want1.filter(
+    ~keep: fun (cs):
+             let ds = derive(cs, 2, rep_of)
+             count_where(for List (i in 2..cs.length()): i,
+                         fun (i): ds[i] == ds[i - 1]) == 0)
+let got4 = synthesize_trials(trans, 200, ~constraints: cons,
+                             ~strategy: #'iterate, ~solver: S)
+let r4 = got4.length() == want4.length()
+report("no_repeats(repetition): solver " ++ to_string(got4.length())
+         ++ " = brute force " ++ to_string(want4.length()), r4)
+
+// ============================================= 3. width 3
+// Crossed with colour this design has no solution, and that is not a bug in
+// the encoding: trials 2..5 would have to carry each colour/streak pair once,
+// so there must be three consecutive reds and three consecutive blues among
+// six trials. The only way to fit both is rrrbbb, whose scored trials are
+// (red,run3), (blue,mixed), (blue,mixed), (blue,run3) -- (blue,mixed) twice
+// and (red,mixed) never. The brute force says 0 too, which is the check.
+experiment win3:
+  ~design: [color, streak]
+  ~cross: [color, streak]
+
+let g3 = geometry_of(win3)
+fun streak_of(window):
+  if window[0] == window[1] && window[1] == window[2] | "run3" | "mixed"
+let want5:
+  all_colors(g3.n_trials).filter(
+    ~keep: fun (cs):
+             crossed_once(cs, derive(cs, 3, streak_of), 3, ["run3", "mixed"]))
+let got5 = synthesize_trials(win3, 200, ~strategy: #'iterate, ~solver: S)
+println("")
+println("width 3 crossed with colour: " ++ to_string(g3.n_trials)
+          ++ " trials, preamble " ++ to_string(g3.preamble[1]))
+let r5 = got5.length() == want5.length() && got5.length() == 0
+report("solver " ++ to_string(got5.length()) ++ " = brute force "
+         ++ to_string(want5.length())
+         ++ " -- no solution, for the reason above", r5)
+
+// Uncrossed and lengthened, the same width-3 factor does have solutions:
+// six trials, three of each colour, and a streak column for trials 2..5.
+experiment win3_loose:
+  ~design: [color, streak]
+  ~cross: [color]
+  ~min_trials: 6
+
+let g3l = geometry_of(win3_loose)
+let want6:
+  all_colors(g3l.n_trials).filter(
+    ~keep: fun (cs): count_where(cs, fun (c): c == "red") == 3)
+let got6 = synthesize_trials(win3_loose, 200, ~strategy: #'iterate, ~solver: S)
+let sound6:
+  for values(ok = #true) (s in got6):
+    let cs = for List (t in s): t[0]
+    ok && (for List (t in s): t[1]) == derive(cs, 3, streak_of)
+           && s[0][1] == #false && s[1][1] == #false
+let r6 = got6.length() == want6.length() && got6.length() == 20 && sound6
+report("uncrossed, ~min_trials 6: solver " ++ to_string(got6.length())
+         ++ " = brute force " ++ to_string(want6.length())
+         ++ " (20), every streak column matches and the preamble is empty", r6)
+
+// ============================================= 4. uncrossed window factor
+// Not crossed, so the segment does not grow: the factor simply has no value
+// for the first trial.
+experiment loose:
+  ~design: [color, repetition]
+  ~cross: [color]
+let gl = geometry_of(loose)
+let got7 = synthesize_trials(loose, 20, ~strategy: #'iterate, ~solver: S)
+let r7 = gl.n_trials == 2
+           && (for values(ok = #true) (s in got7):
+                 let cs = for List (t in s): t[0]
+                 ok && (for List (t in s): t[1]) == derive(cs, 2, rep_of))
+println("")
+report("an uncrossed window factor leaves the trial count alone ("
+         ++ to_string(gl.n_trials) ++ " trials) and still derives", r7)
+
+// ============================================= 5. the other consumer
+// #'random has to fill a window factor too, and it cannot guess: a guess
+// would fill a preamble trial that must stay empty, so no guessed candidate
+// would ever be accepted. It computes the column from the parents instead,
+// which is what SweetPea's RandomGen does -- it samples the basic factors
+// and fills the derived ones, the preamble as its own range.
+let rnd = synthesize_trials(trans, 20, ~strategy: #'random)
+let rnd_ok:
+  for values(ok = #true) (s in rnd):
+    let cs = for List (t in s): t[0]
+    ok && (for List (t in s): t[1]) == derive(cs, 2, rep_of)
+       && s[0][1] == #false
+       && check_sequence(trans, s) == []
+let r8 = rnd.length() == 20 && rnd_ok
+report("#'random fills the window by computing it: " ++ to_string(rnd.length())
+         ++ " candidates, every column right and the checker agreeing", r8)
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "windows: the preamble holds and the derived column always matches" | to_string(bad) ++ " FAILED")

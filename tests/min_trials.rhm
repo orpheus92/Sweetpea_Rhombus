@@ -1,0 +1,111 @@
+#lang rhombus
+// ~min_trials, which is SweetPea's MinimumTrials.
+//
+// A segment holds at least one full crossing; ~min_trials can only make it
+// longer. The trials beyond one crossing spread over the combinations: each
+// combination appears floor or ceiling of the average, never more.
+//
+// The counts below are worked out by hand, so they test the meaning and not
+// just that the encoder and the checker agree with each other.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color:   ["red", "blue"]
+factor size:    ["small", "large"]
+factor session: ["s1", "s2"]
+
+let S = "cryptominisat5"
+let CAP = 300
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+fun suite(label, plan, trials, expect):
+  let g = geometry_of(plan)
+  let got = synthesize_trials(plan, CAP, ~strategy: #'iterate, ~solver: S)
+  let ok = g.n_trials == trials && got.length() == expect
+  report(label ++ "  " ++ to_string(g.n_trials) ++ " trials ("
+           ++ to_string(trials) ++ "), " ++ to_string(got.length())
+           ++ " sequences (" ++ to_string(expect) ++ ")", ok)
+  ok
+
+// One crossed factor of two levels, so a crossing is 2 trials.
+experiment two:
+  ~design: [color]
+  ~cross: [color]
+// 3 trials: one colour appears twice, the other once. 2^3 - 2 = 6.
+experiment three:
+  ~design: [color]
+  ~cross: [color]
+  ~min_trials: 3
+// 4 trials: each colour exactly twice, so C(4,2) = 6.
+experiment four:
+  ~design: [color]
+  ~cross: [color]
+  ~min_trials: 4
+// below the crossing, so it changes nothing
+experiment under:
+  ~design: [color, size]
+  ~cross: [color, size]
+  ~min_trials: 2
+
+let r1 = suite("no keyword                 ", two, 2, 2)
+let r2 = suite("~min_trials: 3, crossing 2 ", three, 3, 6)
+let r3 = suite("~min_trials: 4, crossing 2 ", four, 4, 6)
+let r4 = suite("~min_trials: 2, crossing 4 ", under, 4, 24)
+
+// Inside a ~within design the keyword lengthens each segment, which is what
+// SweetPea does when a MinimumTrials is pushed into a nested block.
+// 2 sessions x 3 trials; each session has one colour twice (6 ways), and the
+// sessions can come in either order: 6 x 6 x 2 = 72.
+experiment nested:
+  ~design: [color]
+  ~cross: [color]
+  ~within: session
+  ~min_trials: 3
+let r5 = suite("~min_trials: 3 under ~within", nested, 6, 72)
+
+// the clauses may come in any order, and this is the same design
+experiment reordered:
+  ~min_trials: 3
+  ~cross: [color]
+  ~within: session
+  ~design: [color]
+let r6 = suite("the same, clauses reordered ", reordered, 6, 72)
+
+// The checker must hold the same line: three of one colour in three trials
+// is one combination appearing more often than the bounds allow.
+println("")
+let lopsided = [["red"], ["red"], ["red"]]
+let balanced = [["red"], ["blue"], ["red"]]
+let r7 = check_sequence(three, lopsided) != [] && check_sequence(three, balanced) == []
+report("the checker rejects three reds in three trials and accepts two", r7)
+
+// and a negative ~min_trials is refused rather than quietly ignored
+experiment negative:
+  ~design: [color]
+  ~cross: [color]
+  ~min_trials: -1
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+let msg = caught(fun (): geometry_of(negative))
+let r8 = msg && to_string(msg).contains("negative")
+report("a negative ~min_trials is refused", r8)
+when !r8
+| println("          got " ++ (if msg | to_string(msg) | "no error"))
+
+// An unrecognized clause must not be silently dropped; tests/bad-clause.rhm
+// is the compile-time half of this.
+println("")
+let r9:
+  for values(ok = #true) (s in synthesize_trials(three, 20, ~strategy: #'random)):
+    ok && check_sequence(three, s) == [] && s.length() == 3
+report("#'random proposes segments of the longer length and all pass", r9)
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r9]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "~min_trials lengthens the design and the crossing spreads" | to_string(bad) ++ " FAILED")

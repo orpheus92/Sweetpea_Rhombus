@@ -1,0 +1,8 @@
+#lang rhombus
+// A weight of zero is not "this level never appears" -- that is exclude, or
+// leaving the level out. It must not compile.
+import: "../sweetpea.rhm" open
+
+factor color: ["red" ~weight 0, "blue"]
+
+println("if this prints, the bad weight was accepted")

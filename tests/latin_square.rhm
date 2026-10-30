@@ -1,0 +1,291 @@
+#lang rhombus
+// latin_square, against an oracle that reads the pattern off a finished
+// sequence and shares no code with the encoder or the checker.
+//
+// The oracle states SweetPea's definition directly: rows of N trials, each
+// row holding every level of both factors, the second factor following the
+// first by a row-constant offset, and consecutive rows taking consecutive
+// offsets. Where the cycle starts is the solver's choice, so the oracle
+// does not care what the first offset is.
+//
+// Which way the cycle turns is not in the documentation, and the two
+// directions give different sets of sequences, so it was settled against
+// SweetPea itself. Feeding squares to sweetpea.sample_mismatch_experiment
+// with LatinSquare([a, b]) in play, at N = 3 and N = 4 and from either
+// start, SweetPea accepts offsets that step down by one per row:
+//
+//   N=4  offsets [0, 3, 2, 1]  ACCEPTED        [0, 1, 2, 3]  rejected
+//        offsets [1, 0, 3, 2]  ACCEPTED        [1, 2, 3, 0]  rejected
+//
+// so the oracle here, and the encoding, step down. At N = 2 the two
+// directions coincide, which is why the complete N = 2 case below cannot
+// tell them apart and the N = 3 cases can.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+
+// ------------------------------------------------------------- oracle
+// index of v in lst, or -1
+fun position(lst, v):
+  for values(found = -1) (k in 0..lst.length()):
+    if lst[k] == v | k | found
+
+fun is_latin(seq, a_levels, b_levels):
+  let n = a_levels.length()
+  let rows = seq.length() / n
+  fun a_of(i): position(a_levels, seq[i][0])
+  fun b_of(i): position(b_levels, seq[i][1])
+  fun offset(i): (b_of(i) - a_of(i) + n * n) mod n
+  // 1. every row is a permutation of each factor's levels
+  let permuted:
+    for values(ok = #true) (r in 0..rows):
+      let as_in_row: for List (c in 0..n): a_of(r * n + c)
+      let bs_in_row: for List (c in 0..n): b_of(r * n + c)
+      let all_a:
+        for values(o = #true) (l in 0..n): o && as_in_row.contains(l)
+      let all_b:
+        for values(o = #true) (l in 0..n): o && bs_in_row.contains(l)
+      ok && all_a && all_b
+  // 2. one offset per row
+  let constant:
+    for values(ok = #true) (r in 0..rows):
+      let o0 = offset(r * n)
+      for values(same = ok) (c in 0..n):
+        same && offset(r * n + c) == o0
+  // 3. consecutive rows, consecutive offsets
+  let consecutive:
+    for values(ok = #true) (r in 0..(rows - 1)):
+      ok && offset((r + 1) * n) == (offset(r * n) - 1 + n) mod n
+  permuted && constant && consecutive
+
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+// =========================================== N = 2: complete, by brute force
+factor a2: ["a1", "a2"]
+factor b2: ["b1", "b2"]
+experiment two:
+  ~design: [a2, b2]
+  ~cross: [a2, b2]
+
+// 4 trials in 2 rows of 2. Row 0 picks an order for a (2 ways) and an offset
+// (2 ways); row 1 picks its own order for a (2) and takes the next offset.
+// So 8 of the 24 orderings are Latin squares.
+let all2 = synthesize_trials(two, 100, ~strategy: #'iterate, ~solver: S)
+let got2 = synthesize_trials(two, 100, ~constraints: [latin_square([a2, b2])],
+                             ~strategy: #'iterate, ~solver: S)
+let want2 = all2.filter(~keep: fun (s): is_latin(s, Factor.levels(a2), Factor.levels(b2)))
+let chk2 = all2.filter(~keep: fun (s): check_sequence(two, s, ~constraints: [latin_square([a2, b2])]) == [])
+println("N = 2, " ++ to_string(all2.length()) ++ " sequences satisfy the design alone")
+let r1 = got2.length() == 8 && want2.length() == 8 && chk2.length() == 8
+report("solver " ++ to_string(got2.length()) ++ ", oracle " ++ to_string(want2.length())
+         ++ ", checker " ++ to_string(chk2.length()) ++ ", expected 8", r1)
+
+// ============================================ N = 3: soundness on a sample
+factor a3: ["a1", "a2", "a3"]
+factor b3: ["b1", "b2", "b3"]
+experiment three:
+  ~design: [a3, b3]
+  ~cross: [a3, b3]
+
+let got3 = synthesize_trials(three, 40, ~constraints: [latin_square([a3, b3])],
+                             ~strategy: #'iterate, ~solver: S)
+let sound3:
+  for values(ok = #true) (s in got3): ok && is_latin(s, Factor.levels(a3), Factor.levels(b3))
+let agree3:
+  for values(ok = #true) (s in got3):
+    ok && check_sequence(three, s, ~constraints: [latin_square([a3, b3])]) == []
+println("\nN = 3, 9 trials in 3 rows of 3")
+let r2 = got3.length() == 40 && sound3 && agree3
+report("every one of " ++ to_string(got3.length())
+         ++ " solver results is a Latin square, and the checker agrees", r2)
+
+// the oracle must also reject, or it proves nothing
+let a_perm = [["a1", "b1"], ["a2", "b2"], ["a3", "b3"],
+              ["a1", "b2"], ["a2", "b3"], ["a3", "b1"],
+              ["a1", "b1"], ["a2", "b2"], ["a3", "b3"]]   // row 2 repeats row 0's offset
+let r3 = !is_latin(a_perm, Factor.levels(a3), Factor.levels(b3))
+         && check_sequence(three, a_perm, ~constraints: [latin_square([a3, b3])]) != []
+report("a square whose third row reuses an offset is rejected by both", r3)
+
+// one printed square, for the record
+println("")
+println("the first N = 3 square, as level indices a/b per row:")
+for (r in 0..3):
+  let line:
+    for values(acc = "   ") (c in 0..3):
+      let t = got3[0][r * 3 + c]
+      acc ++ t[0] ++ "/" ++ t[1] ++ "  "
+  println(line)
+
+// ============================== N = 3 inside each session, via within_each
+// A Latin square per session is SweetPea's LatinSquare under a Nest, which
+// is the case its own implementation leaves unverified for sustain_count > 1.
+factor session: ["s1", "s2"]
+experiment nested:
+  ~design: [a3, b3]
+  ~cross: [a3, b3]
+  ~within: session
+
+let gotn = synthesize_trials(nested, 20,
+                             ~constraints: [within_each(latin_square([a3, b3]))],
+                             ~strategy: #'iterate, ~solver: S)
+let g = geometry_of(nested)
+fun segment(s, seg):
+  for List (c in 0..g.seg_len): s[seg * g.seg_len + c]
+let soundn:
+  for values(ok = #true) (s in gotn):
+    let both:
+      for values(o = #true) (seg in 0..(g.n_trials / g.seg_len)):
+        o && is_latin(segment(s, seg), Factor.levels(a3), Factor.levels(b3))
+    ok && both
+println("\nwithin_each(latin_square(...)) under ~within: "
+          ++ to_string(g.n_trials) ++ " trials in "
+          ++ to_string(g.n_trials / g.seg_len) ++ " sessions of "
+          ++ to_string(g.seg_len))
+let r4 = gotn.length() == 20 && soundn
+report("each session of all " ++ to_string(gotn.length())
+         ++ " results is a Latin square on its own", r4)
+
+// ============================ parity with SweetPea, recorded both ways
+// These four sequences were generated by SweetPea itself, by
+// synthesize_trials(CrossBlock([a,b],[a,b],[LatinSquare([a,b])]), 4,
+// RandomGen) against sweetpea-py at 076a184's parent. The checker here must
+// accept all four. The other direction was checked at the same time: five
+// squares from this encoder were passed to SweetPea's
+// sample_mismatch_experiment with LatinSquare([a,b]) in play, and all five
+// were accepted. Keeping the sequences here means the agreement is retested
+// on every run, without needing SweetPea installed.
+fun pair(as_, bs):
+  for List (i in 0..as_.length()): [as_[i], bs[i]]
+
+let from_sweetpea:
+  [pair(["a1", "a3", "a2", "a2", "a1", "a3", "a1", "a2", "a3"],
+        ["b2", "b1", "b3", "b2", "b1", "b3", "b3", "b1", "b2"]),
+   pair(["a3", "a2", "a1", "a3", "a1", "a2", "a2", "a1", "a3"],
+        ["b3", "b2", "b1", "b2", "b3", "b1", "b3", "b2", "b1"]),
+   pair(["a2", "a3", "a1", "a2", "a3", "a1", "a2", "a3", "a1"],
+        ["b2", "b3", "b1", "b1", "b2", "b3", "b3", "b1", "b2"]),
+   pair(["a1", "a3", "a2", "a2", "a3", "a1", "a3", "a2", "a1"],
+        ["b2", "b1", "b3", "b2", "b3", "b1", "b2", "b1", "b3"])]
+
+println("")
+let accepted:
+  for values(n = 0) (s in from_sweetpea):
+    let by_checker = check_sequence(three, s, ~constraints: [latin_square([a3, b3])]) == []
+    let by_oracle = is_latin(s, Factor.levels(a3), Factor.levels(b3))
+    if by_checker && by_oracle | n + 1 | n
+let r_parity = accepted == from_sweetpea.length()
+report("all " ++ to_string(from_sweetpea.length())
+         ++ " squares generated by SweetPea itself are accepted here", r_parity)
+
+// ====================================================== arguments refused
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+fun refused(label, want, thunk):
+  let msg = caught(thunk)
+  let ok = msg && to_string(msg).contains(want)
+  report(label, ok)
+  when !ok
+  | println("          got " ++ (if msg | to_string(msg) | "no error"))
+  ok
+
+factor wide: ["w1", "w2", "w3", "w4"]
+experiment mixed:
+  ~design: [a3, wide]
+  ~cross: [a3, wide]
+
+println("")
+let r5 = refused("three factors refused                       ", "two factors",
+                 fun (): synthesize_trials(three, 1, ~constraints: [latin_square([a3, b3, a3])],
+                                           ~strategy: #'iterate, ~solver: S))
+// 3 does not divide 4, so this pair cannot fill a row evenly
+let r6 = refused("level counts that do not divide refused     ",
+                 "shorter must divide the longer",
+                 fun (): synthesize_trials(mixed, 1, ~constraints: [latin_square([a3, wide])],
+                                           ~strategy: #'iterate, ~solver: S))
+
+// ================================ unequal counts that do divide
+// SweetPea's diagonal length is the LONGER factor's level count, and a
+// shorter factor fills the row by repeating: with 4 and 2, each of the two
+// levels takes half of every row, and the diagonal is read modulo 2.
+factor wide4: ["w1", "w2", "w3", "w4"]
+factor pair2: ["p1", "p2"]
+experiment uneven:
+  ~design: [wide4, pair2]
+  ~cross: [wide4, pair2]
+
+fun is_latin_uneven(seq, a_levels, b_levels):
+  let n = a_levels.length()
+  let m = b_levels.length()
+  let rows = seq.length() / n
+  fun a_of(i): position(a_levels, seq[i][0])
+  fun b_of(i): position(b_levels, seq[i][1])
+  fun offset(i): (b_of(i) - a_of(i) + n * m) mod m
+  let shares:
+    for values(ok = #true) (r in 0..rows):
+      let as_in_row: for List (c in 0..n): a_of(r * n + c)
+      let all_a:
+        for values(o = #true) (l in 0..n): o && as_in_row.contains(l)
+      let bs_even:
+        for values(o = #true) (l in 0..m):
+          let cnt:
+            for values(k = 0) (c in 0..n): if b_of(r * n + c) == l | k + 1 | k
+          o && cnt == n div m
+      ok && all_a && bs_even
+  let constant:
+    for values(ok = #true) (r in 0..rows):
+      let o0 = offset(r * n)
+      for values(same = ok) (c in 0..n): same && offset(r * n + c) == o0
+  let consecutive:
+    for values(ok = #true) (r in 0..(rows - 1)):
+      ok && offset((r + 1) * n) == (offset(r * n) - 1 + m) mod m
+  shares && constant && consecutive
+
+let gotu = synthesize_trials(uneven, 30, ~constraints: [latin_square([wide4, pair2])],
+                             ~strategy: #'iterate, ~solver: S)
+let soundu:
+  for values(ok = #true) (s in gotu):
+    ok && is_latin_uneven(s, Factor.levels(wide4), Factor.levels(pair2))
+       && check_sequence(uneven, s, ~constraints: [latin_square([wide4, pair2])]) == []
+let r7 = gotu.length() == 30 && soundu
+report("4 levels against 2: every row holds each of the four once and each"
+         ++ " of the two twice, " ++ to_string(gotu.length()) ++ " results", r7)
+// Parity for the uneven case too: these three were generated by SweetPea
+// itself with LatinSquare([wide4, pair2]), and four squares from this
+// encoder were passed to its sample_mismatch_experiment and all accepted.
+let uneven_from_sweetpea:
+  [pair(["w4", "w1", "w2", "w3", "w3", "w1", "w4", "w2"],
+        ["p2", "p1", "p2", "p1", "p2", "p2", "p1", "p1"]),
+   pair(["w2", "w1", "w3", "w4", "w2", "w3", "w1", "w4"],
+        ["p2", "p1", "p1", "p2", "p1", "p2", "p2", "p1"]),
+   pair(["w1", "w2", "w4", "w3", "w3", "w2", "w1", "w4"],
+        ["p2", "p1", "p1", "p2", "p1", "p2", "p1", "p2"])]
+let accepted_u:
+  for values(n = 0) (s in uneven_from_sweetpea):
+    let by_checker:
+      check_sequence(uneven, s, ~constraints: [latin_square([wide4, pair2])]) == []
+    let by_oracle = is_latin_uneven(s, Factor.levels(wide4), Factor.levels(pair2))
+    if by_checker && by_oracle | n + 1 | n
+let r8 = accepted_u == uneven_from_sweetpea.length()
+report("all " ++ to_string(uneven_from_sweetpea.length())
+         ++ " uneven squares from SweetPea are accepted here too", r8)
+
+println("")
+println("the first 4-against-2 square, by row:")
+for (r in 0..2):
+  let line:
+    for values(acc = "   ") (c in 0..4):
+      let t = gotu[0][r * 4 + c]
+      acc ++ t[0] ++ "/" ++ t[1] ++ "  "
+  println(line)
+
+let results = [r1, r2, r3, r4, r5, r6, r7, r8, r_parity]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "latin_square agrees with the definition, and refuses what it cannot do" | to_string(bad) ++ " FAILED")

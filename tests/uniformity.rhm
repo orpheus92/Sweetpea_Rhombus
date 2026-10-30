@@ -1,6 +1,7 @@
 #lang rhombus
 import:
   "../sweetpea.rhm" open
+  "../constraints.rhm" open
   "../synthesize.rhm" open
 
 factor color: ["red", "blue"]
@@ -42,6 +43,47 @@ println("chi-square (df=" ++ to_string(n_possible - 1) ++ "):     "
 println("  p=.05  critical value for df=23: 35.17  (informational)")
 println("  p=.001 critical value for df=23: 49.73  (what this test asserts)")
 println("  verdict: " ++ (if chi2 < 49.73
+                          | "consistent with uniform"
+                          | "NOT consistent with uniform -- investigate"))
+
+// ---------------------------------------------------------------------
+// The same question for a design with a derived factor IN the crossing,
+// which is the case where the proposal has to work for its living: the
+// crossing fixes congruency, so the word is drawn from the levels that
+// produce it. Picking the first word that fits would bias the draw; picking
+// uniformly among those that fit does not, because every arrangement of the
+// crossing admits the same number of completions.
+//
+// Four trials, and the valid sequences are the 24 orderings of the four
+// colour/congruency pairs, with the word following from each.
+factor word: ["red", "blue"]
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+experiment stroop:
+  ~design: [color, word, congruency]
+  ~cross: [color, congruency]
+
+let n2 = 24
+let draws2 = synthesize_trials(stroop, n_draws, ~strategy: #'random)
+println("\na derived factor in the crossing: " ++ to_string(n_draws)
+          ++ " draws over " ++ to_string(n2) ++ " sequences")
+let valid2:
+  for values(ok = #true) (s in draws2):
+    ok && check_sequence(stroop, s) == []
+println("every draw valid:        " ++ to_string(valid2))
+println("distinct sequences seen: " ++ to_string(Set(& draws2).length())
+          ++ " of " ++ to_string(n2))
+let counts2:
+  for values(m = {}) (s in draws2):
+    m ++ { s: (m.get(s, 0)) + 1 }
+let expected2 = n_draws / n2
+let chi2b:
+  for values(acc = 0.0) (k in counts2.keys()):
+    let d = counts2[k] - expected2
+    acc + (d * d) / expected2
+println("chi-square (df=23):      " ++ to_string(math.round(chi2b * 100.0) / 100.0))
+println("  verdict: " ++ (if chi2b < 49.73
                           | "consistent with uniform"
                           | "NOT consistent with uniform -- investigate"))
 

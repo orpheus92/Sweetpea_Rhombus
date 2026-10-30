@@ -1,0 +1,11 @@
+#lang rhombus
+// A width-2 predicate must take two values per parent factor: the previous
+// trial's and this one's. Taking one is the mistake you would make writing a
+// Transition as if it were a WithinTrial, and it must not compile.
+import: "../sweetpea.rhm" open
+
+factor color: ["red", "blue"]
+factor repetition(color) ~width 2:
+  [derived same(now): now == "red"]
+
+println("if this prints, the wrong arity was accepted")

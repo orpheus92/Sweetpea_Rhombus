@@ -1,0 +1,132 @@
+#lang rhombus
+// Level weights: SweetPea's Level(name, weight=w).
+//
+// A level of weight w is combined w times with each combination of the other
+// crossed factors' levels. So the crossing takes the product of the weight
+// sums in trials, while the set of distinct combinations is still the
+// product of the level counts, and each combination is entitled to the
+// product of its own levels' weights.
+//
+// The oracle enumerates every assignment of combinations to trials and keeps
+// the ones whose counts are right, which shares nothing with the encoder.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red" ~weight 2, "blue"]
+factor size:  ["small", "large"]
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+// --------------------------------------------------------------- oracle
+let COMBOS = [["red", "small"], ["red", "large"],
+              ["blue", "small"], ["blue", "large"]]
+let WANT = [2, 2, 1, 1]      // red is worth two of each size, blue one
+
+fun assignments(n):
+  if n == 0
+  | [[]]
+  | let tails = assignments(n - 1)
+    let nested:
+      for List (j in 0..COMBOS.length()):
+        for List (t in tails): List.cons(j, t)
+    List.append(& nested)
+
+fun counts_of(a):
+  for List (j in 0..COMBOS.length()):
+    for values(n = 0) (x in a): if x == j | n + 1 | n
+
+// ============================================ 1. the weighted crossing
+experiment plan:
+  ~design: [color, size]
+  ~cross: [color, size]
+
+let g = geometry_of(plan)
+let want1 = assignments(g.n_trials).filter(~keep: fun (a): counts_of(a) == WANT)
+let got1 = synthesize_trials(plan, 400, ~strategy: #'iterate, ~solver: S)
+println("red ~weight 2 crossed with size: " ++ to_string(g.n_trials)
+          ++ " trials ((2+1) x (1+1) = 6)")
+// every result must show each combination its due number of times
+fun shape_of(s):
+  for List (cb in COMBOS):
+    for values(n = 0) (t in s): if t[0] == cb[0] && t[1] == cb[1] | n + 1 | n
+let sound1:
+  for values(ok = #true) (s in got1): ok && shape_of(s) == WANT
+let r1 = g.n_trials == 6 && got1.length() == want1.length()
+           && got1.length() == 180 && sound1
+report("solver " ++ to_string(got1.length()) ++ " = brute force "
+         ++ to_string(want1.length()) ++ " (6!/2!2! = 180), every result"
+         ++ " weighted correctly", r1)
+
+// the checker must reject a sequence with the counts the other way round
+let swapped = [["blue", "small"], ["blue", "small"], ["blue", "large"],
+               ["blue", "large"], ["red", "small"], ["red", "large"]]
+let r2 = check_sequence(plan, swapped) != []
+           && check_sequence(plan, got1[0]) == []
+report("the checker rejects a sequence that gives blue the larger share", r2)
+
+// ============================================ 2. weight 1 changes nothing
+factor flat: ["red" ~weight 1, "blue"]
+experiment unweighted:
+  ~design: [flat, size]
+  ~cross: [flat, size]
+let gu = geometry_of(unweighted)
+let r3 = gu.n_trials == 4
+           && synthesize_trials(unweighted, 100, ~strategy: #'iterate,
+                                ~solver: S).length() == 24
+report("~weight 1 is the same as no weight: 4 trials, 24 sequences", r3)
+
+// ============================================ 3. weights with ~min_trials
+// Twelve trials is two full crossings, so every entitlement doubles.
+experiment longer:
+  ~design: [color, size]
+  ~cross: [color, size]
+  ~min_trials: 12
+let gl = geometry_of(longer)
+let doubled:
+  for values(ok = #true) (s in synthesize_trials(longer, 20, ~strategy: #'iterate,
+                                                 ~solver: S)):
+    ok && shape_of(s) == [4, 4, 2, 2]
+let r4 = gl.n_trials == 12 && doubled
+report("~min_trials 12 doubles every share, to 4/4/2/2", r4)
+
+// ============================================ 4. a weighted derived level
+factor word: ["red", "blue"]
+factor plainc: ["red", "blue"]
+factor congruency(plainc, word):
+  [derived con(a, b) ~weight 2: a == b,
+   derived inc(a, b): a != b]
+experiment derived_weight:
+  ~design: [plainc, word, congruency]
+  ~cross: [plainc, congruency]
+let gd = geometry_of(derived_weight)
+// colour has weight sum 2, congruency has 2 + 1 = 3, so 6 trials, and each
+// (colour, con) pair is worth two while each (colour, inc) pair is worth one
+let gotd = synthesize_trials(derived_weight, 100, ~strategy: #'iterate, ~solver: S)
+fun pair_count(s, c, g2):
+  for values(n = 0) (t in s): if t[0] == c && t[2] == g2 | n + 1 | n
+let soundd:
+  for values(ok = #true) (s in gotd):
+    ok && pair_count(s, "red", "con") == 2 && pair_count(s, "red", "inc") == 1
+       && pair_count(s, "blue", "con") == 2 && pair_count(s, "blue", "inc") == 1
+let r5 = gd.n_trials == 6 && gotd.length() > 0 && soundd
+report("a derived level can be weighted too: " ++ to_string(gd.n_trials)
+         ++ " trials, each congruent pair twice", r5)
+
+// ============================================ 5. an uncrossed weight
+// SweetPea says a weight on an uncrossed factor only biases sampling, so it
+// must not change the trial count or what the solver accepts.
+experiment uncrossed_weight:
+  ~design: [color, size]
+  ~cross: [size]
+let gw = geometry_of(uncrossed_weight)
+let r6 = gw.n_trials == 2
+report("a weight on an uncrossed factor leaves the geometry alone ("
+         ++ to_string(gw.n_trials) ++ " trials)", r6)
+
+let results = [r1, r2, r3, r4, r5, r6]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "weights: the crossing gives each combination its share" | to_string(bad) ++ " FAILED")

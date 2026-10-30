@@ -12,109 +12,267 @@ export:
   Experiment
   factor
   experiment
+  level_value
 
-class Factor(name, levels, params)
+// `width` is how many consecutive trials a derived level reads: 1 for a
+// plain factor and for SweetPea's WithinTrial, 2 for its Transition, w for
+// its Window. A factor of width w has no level for the first w-1 trials of
+// a segment, which is SweetPea's preamble.
+// `weights` is one positive integer per level, or [] for all ones. A level
+// of weight w is combined w times with each combination of the other crossed
+// factors' levels, which is SweetPea's Level(name, weight=w).
+// `stride` is how often the factor is derived: with a stride of s it has a
+// level every s trials rather than every trial, which is SweetPea's Window
+// stride. `start` overrides the first trial that gets a level; #false means
+// the earliest trial where every factor it reads has what it needs.
+class Factor(name, levels, params, width, weights, stride, start)
 class DerivedLevel(name, arity, predicate)
-class Experiment(name, design, cross, constraints, within, in_order)
+class Experiment(name, design, cross, constraints, within, in_order, min_trials,
+                 cover)
+
+// A plain level is its own value, a string. A derived level is an object
+// carrying a predicate, and its value is its name -- so a trial reads the
+// same either way, and a constraint can say `exclude(congruency, "inc")`
+// or `exclude(congruency, congruency.inc)` without caring which kind it is.
+fun level_value(l):
+  match l
+  | DerivedLevel(n, _, _): n
+  | ~else: l
 
 meta:
   fun id_string(stx): to_string(Syntax.unwrap(stx))
 
 defn.macro
+// factor repetition(color) ~width 2:            // SweetPea's Transition
+//   [derived same(prev, now): prev == now,
+//    derived switch(prev, now): prev != now]
+//
+// A predicate takes `width` values for each parent factor, oldest first and
+// the parents in declaration order, so for ~width 2 over (color, word) the
+// parameters are (color_prev, color_now, word_prev, word_now). With the
+// default width of 1 this is one value per factor, as before.
+| 'factor $name($fac, ...) ~width $w ~stride $st ~start $sta: [$lvl, ...]':
+    'factor $name($fac, ...) ~shape ($w, $st, $sta): [$lvl, ...]'
+| 'factor $name($fac, ...) ~width $w ~stride $st: [$lvl, ...]':
+    'factor $name($fac, ...) ~shape ($w, $st, #false): [$lvl, ...]'
+| 'factor $name($fac, ...) ~width $w: [$lvl, ...]':
+    'factor $name($fac, ...) ~shape ($w, 1, #false): [$lvl, ...]'
+
 // factor congruency(color, word):
 //   [derived con(a, b): a == b,
 //    derived inc(a, b): a != b]
 | 'factor $name($fac, ...): [$lvl, ...]':
+    'factor $name($fac, ...) ~shape (1, 1, #false): [$lvl, ...]'
+
+| 'factor $name($fac, ...) ~shape ($w, $st, $sta): [$lvl, ...]':
     let s = id_string(name)
-    let arity = [fac, ...].length()
+    let width = Syntax.unwrap(w)
+    let stride = Syntax.unwrap(st)
+    when !(stride is_a Int) || stride < 1
+    | error("factor " +& s +& ": ~stride must be a positive integer, not "
+              +& to_string(stride))
+    when !(width is_a Int) || width < 1
+    | error("factor " +& s +& ": ~width must be a positive integer, not "
+              +& to_string(width))
+    let arity = [fac, ...].length() * width
     let lvls:
       for List (l in [lvl, ...]):
-        match l
+        // the weight is read separately, below; strip it and carry on
+        let core:
+          match l
+          | 'derived $lname($p, ...) ~weight $wt: $body':
+              'derived $lname($p, ...): $body'
+          | 'else $lname ~weight $wt': 'else $lname'
+          | ~else: l
+        match core
+        // SweetPea's ElseLevel: no predicate of its own, it holds exactly
+        // when none of the others do. The arity question does not arise.
+        | 'else $lname':
+            'DerivedLevel($(id_string(lname)), 0, #false)'
         | 'derived $lname($p, ...): $body':
             let n = [p, ...].length()
             if n == arity
             | 'DerivedLevel($(id_string(lname)), $n, fun ($p, ...): $body)'
             | error("factor " +& s +& ": derived level `" +& id_string(lname)
                       +& "` takes " +& n +& " parameter(s), but " +& s
-                      +& " is parameterized over " +& arity +& " factor(s)")
+                      +& " is parameterized over " +& [fac, ...].length()
+                      +& " factor(s) at width " +& width
+                      +& ", so it needs " +& arity)
         | ~else:
             error("factor " +& s +& ": expected a `derived` clause")
-    'def $name = Factor($s, [$(each lvls), ...], [$fac, ...])'
+    let dws:
+      for List (l in [lvl, ...]):
+        match l
+        | 'else $lname ~weight $wt':
+            let n = Syntax.unwrap(wt)
+            when !(n is_a Int) || n < 1
+            | error("factor " +& s +& ": ~weight must be a positive integer,"
+                      +& " not " +& to_string(n))
+            n
+        | 'derived $lname($p, ...) ~weight $wt: $body':
+            let n = Syntax.unwrap(wt)
+            when !(n is_a Int) || n < 1
+            | error("factor " +& s +& ": ~weight must be a positive integer,"
+                      +& " not " +& to_string(n))
+            n
+        | ~else: 1
+    // the derived level names are bindings too, as for a plain factor
+    let lnames:
+      for List (l in [lvl, ...]):
+        match l
+        | 'derived $lname($p, ...) ~weight $wt: $body': id_string(lname)
+        | 'derived $lname($p, ...): $body': id_string(lname)
+        | 'else $lname ~weight $wt': id_string(lname)
+        | 'else $lname': id_string(lname)
+        | ~else: ""
+    let ids: for List (v in lnames): Syntax.make_id(v, name)
+    let defs:
+      for List (v in lnames):
+        'def $(Syntax.make_id(v, name)) = $v'
+    let wlist = '[$(each dws), ...]'
+    let llist = '[$(each lvls), ...]'
+    'def $name = Factor($s, $llist, [$fac, ...], $width, $wlist, $stride, $sta)
+     namespace $name:
+       export:
+         $(each ids)
+         ...
+       $(each defs)
+       ...'
 
 // factor color: ["red", "blue"]
+//
+// Besides the Factor value, this binds each level name inside the factor's
+// own namespace, so a level is referred to by a name that has to resolve:
+//
+//     exclude(color, color.red)     checked when the module is compiled
+//     exclude(color, color.pink)    pink: identifier not provided by color
+//
+// which is the proposal's argument about binding versus values, applied to
+// levels rather than factors. The string form still works, since a level is
+// a string at run time, but a misspelled string can only be caught when the
+// constraint runs -- so prefer the dotted form.
+//
+// The level list is deliberately NOT also carried as a compile-time value
+// here. Doing that needs a phase-1 definition at the use site, and a plain
+// `#lang rhombus` module imports Rhombus only at phase 0, so the planted
+// definition has no bindings to evaluate with. Checking a string literal
+// against the levels would therefore only work in modules written in
+// `rhombus/and_meta`, which is a worse trade than asking for `color.red`.
 | 'factor $name: $levels':
-    'def $name = Factor($(id_string(name)), $levels, [])'
+    let s = id_string(name)
+    // a level is a value, optionally weighted:  ["red" ~weight 2, "blue"]
+    let parsed:
+      match levels
+      | '[$l, ...]':
+          for List (x in [l, ...]):
+            match x
+            | '$v ~weight $w':
+                let n = Syntax.unwrap(w)
+                when !(n is_a Int) || n < 1
+                | error("factor " +& s +& ": ~weight must be a positive"
+                          +& " integer, not " +& to_string(n))
+                [x, v, n]
+            | ~else: [x, x, 1]
+      | ~else: []     // levels given as an expression: nothing to bind
+    let vals: for List (q in parsed): q[1]
+    let ws: for List (q in parsed): q[2]
+    let strs: for List (v in vals): Syntax.unwrap(v)
+    for (i in 0..strs.length()):
+      for (j in (i + 1)..strs.length()):
+        when strs[i] == strs[j]
+        | error("factor " ++ s ++ ": the level " ++ to_string(strs[i])
+                  ++ " is listed twice")
+    let ids: for List (v in strs): Syntax.make_id(to_string(v), name)
+    let defs:
+      for List (i in 0..strs.length()):
+        'def $(ids[i]) = $(strs[i])'
+    let wlist = '[$(each ws), ...]'
+    let vlist = '[$(each vals), ...]'
+    'def $name = Factor($s, $vlist, [], 1, $wlist, 1, #false)
+     namespace $name:
+       export:
+         $(each ids)
+         ...
+       $(each defs)
+       ...'
 
-defn.macro
 // experiment plan:
 //   ~design: [color, word, congruency]
 //   ~cross: [color, congruency]
-//   ~constraints: [MinimumTrials(30)]
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]
-     ~constraints: $cons':
-    let s = id_string(name)
-    let design_names = for List (f in [d, ...]): id_string(f)
-    for (f in [c, ...]):
-      when !(design_names.contains(id_string(f)))
-      | error("experiment " +& s +& ": `" +& id_string(f)
-                +& "` appears in ~cross but not in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, #false, #false)'
-
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]
-     ~within: $w ~in_order
-     ~constraints: $cons':
-    let s = id_string(name)
-    let design_names = for List (f in [d, ...]): id_string(f)
-    for (f in [c, ...]):
-      when !(design_names.contains(id_string(f)))
-      | error("experiment " ++ s ++ ": `" ++ id_string(f)
-                ++ "` appears in ~cross but not in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w, #true)'
-
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]
-     ~within: $w ~in_order':
-    'experiment $name:
-       ~design: [$d, ...]
-       ~cross: [$c, ...]
-       ~within: $w ~in_order
-       ~constraints: []'
-
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]
-     ~within: $w
-     ~constraints: $cons':
-    let s = id_string(name)
-    let design_names = for List (f in [d, ...]): id_string(f)
-    for (f in [c, ...]):
-      when !(design_names.contains(id_string(f)))
-      | error("experiment " ++ s ++ ": `" ++ id_string(f)
-                ++ "` appears in ~cross but not in ~design")
-    when design_names.contains(id_string(w))
-    | error("experiment " ++ s ++ ": `" ++ id_string(w)
-              ++ "` is the ~within factor, so it must not also be in ~design")
-    'def $name = Experiment($s, [$d, ...], [$c, ...], $cons, $w, #false)'
-
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]
-     ~within: $w':
-    'experiment $name:
-       ~design: [$d, ...]
-       ~cross: [$c, ...]
-       ~within: $w
-       ~constraints: []'
-
-| 'experiment $name:
-     ~design: [$d, ...]
-     ~cross: [$c, ...]':
-    'experiment $name:
-       ~design: [$d, ...]
-       ~cross: [$c, ...]
-       ~constraints: []'
+//   ~within: session ~in_order
+//   ~min_trials: 30
+//   ~constraints: [no_repeats(color)]
+//
+// The clauses are read one at a time, so they may come in any order and any
+// of them except ~design and ~cross may be left out.
+//
+// ~min_trials is SweetPea's MinimumTrials. It is a keyword rather than a
+// constraint because that is what it is in SweetPea too: MinimumTrials.apply
+// only sets a field on the block and its checker returns True unconditionally.
+// It states how long the design is, which is geometry, like ~in_order states
+// what order the segments come in.
+defn.macro 'experiment $name:
+              $clause
+              ...':
+  let s = id_string(name)
+  let parsed:
+    for List (c in [clause, ...]):
+      match c
+      | '~design: $x': ["design", x]
+      | '~cross: $x': ["cross", x]
+      | '~within: $w ~in_order': ["within_ordered", w]
+      | '~within: $x': ["within", x]
+      | '~constraints: $x': ["constraints", x]
+      | '~min_trials: $x': ["min_trials", x]
+      | '~cover: $x': ["cover", x]
+      | ~else:
+          error("experiment " ++ s ++ ": unrecognized clause `"
+                  ++ to_string(c) ++ "`; expected ~design, ~cross, ~within,"
+                  ++ " ~min_trials, ~cover or ~constraints")
+  fun one(kind):
+    for values(found = #false) (p in parsed):
+      if p[0] == kind | p[1] | found
+  fun names_of(stx, what):
+    match stx
+    | '[$f, ...]': for List (g in [f, ...]): id_string(g)
+    | ~else:
+        error("experiment " ++ s ++ ": " ++ what
+                ++ " needs a list of factors written out")
+  let design = one("design")
+  when !design
+  | error("experiment " ++ s ++ ": no ~design")
+  let cross = one("cross")
+  when !cross
+  | error("experiment " ++ s ++ ": no ~cross")
+  let design_names = names_of(design, "~design")
+  for (f in names_of(cross, "~cross")):
+    when !(design_names.contains(f))
+    | error("experiment " ++ s ++ ": `" ++ f
+              ++ "` appears in ~cross but not in ~design")
+  let w_ordered = one("within_ordered")
+  let w_plain = one("within")
+  when w_ordered && w_plain
+  | error("experiment " ++ s ++ ": two ~within clauses")
+  let within = if w_ordered | w_ordered | w_plain
+  // ~within takes one factor or a list of them: SweetPea's outer block is a
+  // block, so it may cross several factors, and then a segment holds one
+  // combination of them constant
+  let within_names:
+    if !within
+    | []
+    | match within
+      | '[$f, ...]': for List (g in [f, ...]): id_string(g)
+      | ~else: [id_string(within)]
+  for (nm in within_names):
+    when design_names.contains(nm)
+    | error("experiment " ++ s ++ ": `" ++ nm
+              ++ "` is a ~within factor, so it must not also be in ~design")
+  let cons = one("constraints")
+  let mt = one("min_trials")
+  let cv = one("cover")
+  'def $name = Experiment($s, $design, $cross,
+                          $(if cons | cons | '[]'),
+                          $(if within | within | '#false'),
+                          $(if w_ordered | '#true' | '#false'),
+                          $(if mt | mt | '#false'),
+                          $(if cv | cv | '#false'))'

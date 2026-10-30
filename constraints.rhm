@@ -22,15 +22,19 @@ export:
   Lev
   Comb
   Not
+  All
   Req
   Geom
+  has_level
   Constraint
   exactly
   at_most
   at_least
   constraint
+  within_each
   cnf_of
   holds_in
+  reqs_of
   consistent
   crossed
   exclude
@@ -39,10 +43,12 @@ export:
   at_most_k_in_a_row
   at_least_k_in_a_row
   exactly_k_in_a_row
+  exactly_k_multiple_in_a_row
   exactly_k
   sustained
   outer_crossed
   sequential
+  latin_square
   index_of_factor
   index_of_level
 
@@ -52,8 +58,24 @@ class Comb(trial, combo)
 // "at most one of (a, not b)", which is the clause (not a or b) -- an
 // implication. Needed for sustain: a factor held constant over a segment.
 class Not(atom)
+// The conjunction of its atoms, used as a single literal. Needed to say
+// "some trial realizes this whole combination", which is a disjunction of
+// conjunctions and so cannot be written as a count over plain literals.
+// cnf_of gives it a variable of its own and the clauses that define it;
+// holds_in just reads the atoms. Comb(i, j) is the same idea for the
+// crossing, with its variable allocated once alongside the numbering.
+class All(atoms)
 class Req(atoms, lo, hi)
-class Geom(n_trials, factors, counts, combos, cross_idx, seg_len, sustain)
+// The design, as the encoding sees it. `factors` carries level VALUES: by
+// the time a geometry exists, a derived level has been replaced by its name.
+// So a constraint never learns where a level came from, and nothing in this
+// file knows that derived factors exist.
+// `preamble[fi]` is how many trials at the start of each segment the factor
+// has no level for at all: width-1 for a window factor, 0 otherwise. A
+// trial inside the preamble has no value for that factor, so no level
+// variable of it may be set there.
+class Geom(n_trials, factors, counts, combos, cross_idx, seg_len, sustain,
+           preamble, stride)
 class Constraint(name, reqs)
 
 // Constraints name factors and levels directly; these resolve a name to
@@ -77,6 +99,25 @@ fun index_of_level(geom, fi, lvl) :: Int:
             ++ "` has no level " ++ to_string(lvl))
   i
 
+// Whether a factor has a level at all in this trial. A window factor has
+// none before its start, and with a stride above 1 it has one only every
+// `stride` trials from there. Everything that reads a trial asks this first.
+fun has_level(geom :: Geom, fi :: Int, i :: Int) :: Boolean:
+  let k = i mod geom.seg_len
+  k >= geom.preamble[fi] && (k - geom.preamble[fi]) mod geom.stride[fi] == 0
+
+// every combination of indices, first position outermost, so the order is
+// lexicographic -- the order `sequential` runs through them in
+fun all_tuples(counts :: List) :: List:
+  match counts
+  | []: [[]]
+  | ~else:
+      let tails = all_tuples(counts.drop(1))
+      let nested:
+        for List (i in 0..counts[0]):
+          for List (x in tails): List.cons(i, x)
+      List.append(& nested)
+
 fun exactly(n, atoms):  Req(atoms, n, n)
 fun at_most(n, atoms):  Req(atoms, 0, n)
 fun at_least(n, atoms): Req(atoms, n, atoms.length())
@@ -97,7 +138,8 @@ fun lit_var(a, var_of):
 
 fun lit_true(a, is_set):
   match a
-  | Not(inner): !is_set(inner)
+  | Not(inner): !lit_true(inner, is_set)
+  | All(inner): for values(ok = #true) (x in inner): ok && lit_true(x, is_set)
   | ~else: is_set(a)
 
 fun pairwise_not_both(vs :: List) :: List:
@@ -151,11 +193,27 @@ fun at_least_k(vs :: List, k :: Int, fresh :: Int):
   | k == 1: values([vs], fresh)
   | ~else: at_most_k(vs.map(fun (v): - v), n - k, fresh)
 
+// An All atom becomes a variable of its own, y, with y true exactly when
+// every atom under it is true: (not y or x) for each x, and (y or some x is
+// false). Both directions, so the variable means what it says whichever way
+// a requirement uses it.
+fun define_alls(atoms :: List, var_of, fresh :: Int):
+  for values(vs = [], cls = [], f = fresh) (a in atoms):
+    match a
+    | All(inner):
+        let y = f
+        let lits: for List (x in inner): lit_var(x, var_of)
+        let forward: for List (v in lits): [- y, v]
+        let backward = List.cons(y, for List (v in lits): - v)
+        values(List.add(vs, y), cls ++ forward ++ [backward], f + 1)
+    | ~else:
+        values(List.add(vs, lit_var(a, var_of)), cls, f)
+
 fun cnf_of(req :: Req, var_of, fresh :: Int):
-  let vs = req.atoms.map(fun (a): lit_var(a, var_of))
-  let (lo_cls, f1) = at_least_k(vs, req.lo, fresh)
+  let (vs, defs, f0) = define_alls(req.atoms, var_of, fresh)
+  let (lo_cls, f1) = at_least_k(vs, req.lo, f0)
   let (hi_cls, f2) = at_most_k(vs, req.hi, f1)
-  values(lo_cls ++ hi_cls, f2)
+  values(defs ++ lo_cls ++ hi_cls, f2)
 
 fun holds_in(req :: Req, is_set) :: Boolean:
   let n:
@@ -166,6 +224,113 @@ fun holds_in(req :: Req, is_set) :: Boolean:
 // ----------------------------------------------------- built-in constraints
 
 // exactly one level of each factor on each trial
+// ------------------------------------------- one way in, used by both
+// Both consumers reach a constraint's requirements through here, so an atom
+// that names a trial, factor or level the design does not have is caught
+// once, with the constraint's name attached.
+//
+// Declaring a constraint once keeps cnf_of and holds_in from disagreeing
+// about what it means, which was SweetPea's Sequential bug. It does not stop
+// an atom from pointing outside the geometry, and until this check the two
+// consumers behaved differently when one did: pin(99, ...) on a four-trial
+// design had the solver allocate a variable for a trial that does not exist
+// and return every sequence, while the checker crashed indexing the
+// sequence. That is a gap in the atoms, not in the declaration, so it is
+// closed in the one place both consumers pass through.
+fun atom_fault(geom, a):
+  match a
+  | Not(inner): atom_fault(geom, inner)
+  | All(inner):
+      for values(found = #false) (x in inner):
+        if found | found | atom_fault(geom, x)
+  | Lev(i, fi, li):
+      cond
+      | i < 0 || i >= geom.n_trials:
+          "trial " ++ to_string(i) ++ ", but this design has "
+            ++ to_string(geom.n_trials) ++ " trials, 0.."
+            ++ to_string(geom.n_trials - 1)
+      | fi < 0 || fi >= geom.factors.length():
+          "factor position " ++ to_string(fi) ++ " of "
+            ++ to_string(geom.factors.length())
+      | li < 0 || li >= geom.counts[fi]:
+          "level " ++ to_string(li) ++ " of `" ++ geom.factors[fi].name
+            ++ "`, which has " ++ to_string(geom.counts[fi]) ++ " levels"
+      | ~else: #false
+  | Comb(i, j):
+      cond
+      | i < 0 || i >= geom.n_trials:
+          "trial " ++ to_string(i) ++ " of " ++ to_string(geom.n_trials)
+      | j < 0 || j >= geom.combos.length():
+          "combination " ++ to_string(j) ++ " of "
+            ++ to_string(geom.combos.length())
+      | ~else: #false
+  | ~else: "an atom of an unknown kind, " ++ to_string(a)
+
+fun reqs_of(c :: Constraint, geom :: Geom) :: List:
+  let rs = (c.reqs)(geom)
+  for (r in rs):
+    when r.atoms.length() == 0
+    | error("constraint `" ++ c.name ++ "`: a requirement over no atoms")
+    when r.lo < 0 || r.hi < r.lo || r.hi > r.atoms.length()
+    | error("constraint `" ++ c.name ++ "`: bounds " ++ to_string(r.lo)
+              ++ ".." ++ to_string(r.hi) ++ " over "
+              ++ to_string(r.atoms.length()) ++ " atoms")
+    for (a in r.atoms):
+      let fault = atom_fault(geom, a)
+      when fault
+      | error("constraint `" ++ c.name ++ "` names " ++ fault)
+  rs
+
+// ------------------------------------------------------------ scope
+// Any constraint, applied inside each segment rather than across the whole
+// sequence. SweetPea attaches constraint lists to the inner block of a Nest;
+// this says the same thing without a second kind of constraint:
+//
+//     no_repeats(size)                no two adjacent trials anywhere
+//     within_each(no_repeats(size))   ... except across a segment boundary
+//
+// The constraint is asked for its requirements against a geometry one
+// segment long, and the resulting trial indices are shifted into each
+// segment in turn. So this needs nothing from the constraint, and works for
+// every constraint there is or will be -- including a pin, which then pins
+// the same trial of every segment. Without a ~within factor there is one
+// segment, and this changes nothing.
+fun shift_atom(a, d):
+  match a
+  | Not(x): Not(shift_atom(x, d))
+  | All(xs): All(for List (x in xs): shift_atom(x, d))
+  | Lev(i, fi, li): Lev(i + d, fi, li)
+  | Comb(i, j): Comb(i + d, j)
+  | ~else: a
+
+fun shift_req(r :: Req, d :: Int) :: Req:
+  let moved: for List (a in r.atoms): shift_atom(a, d)
+  Req(moved, r.lo, r.hi)
+
+fun within_each(c :: Constraint) :: Constraint:
+  Constraint("within_each(" ++ c.name ++ ")",
+             fun (geom):
+               let one_segment:
+                 Geom(geom.seg_len, geom.factors, geom.counts, geom.combos,
+                      geom.cross_idx, geom.seg_len, geom.sustain,
+                      geom.preamble, geom.stride)
+               // validated against the segment, so a trial index too large
+               // for one segment is refused here rather than landing in the
+               // next segment
+               let rs = reqs_of(c, one_segment)
+               let n_seg = geom.n_trials / geom.seg_len
+               let nested:
+                 for List (seg in 0..n_seg):
+                   for List (r in rs):
+                     shift_req(r, seg * geom.seg_len)
+               List.append(& nested))
+
+// A requirement nothing satisfies, for a constraint asking more than the
+// design can give. SweetPea returns no sequences in that case rather than
+// raising, so neither does this: both x and not-x true is unsatisfiable for
+// the solver and false for the checker.
+fun impossible(a): Req([a, Not(a)], 2, 2)
+
 constraint consistent() ~given geom:
   let per:
     for List (i in 0..geom.n_trials):
@@ -173,7 +338,10 @@ constraint consistent() ~given geom:
         let atoms:
           for List (li in 0..geom.counts[fi]):
             Lev(i, fi, li)
-        exactly(1, atoms)
+        // where a factor has no level, none of its levels may be set
+        if has_level(geom, fi, i)
+        | exactly(1, atoms)
+        | exactly(0, atoms)
   List.append(& per)
 
 // every combination of the crossed factors appears exactly once,
@@ -182,23 +350,53 @@ constraint consistent() ~given geom:
 // each segment*. Without nesting there is one segment covering all trials,
 // so this is the same as before; with `~within` each instance of the inner
 // block is balanced on its own.
+// Each combination appears equally often in a segment, as far as the
+// segment's length allows: floor and ceiling of the average. When the
+// segment is exactly one crossing, which is the usual case, both are 1 and
+// this is "each combination exactly once". When ~min_trials has made the
+// segment longer, the extra trials spread over the combinations rather than
+// piling onto any one of them. The cardinality encoding takes the bounds
+// directly, so a longer segment costs nothing here.
 constraint crossed() ~given geom:
   let n_seg = geom.n_trials / geom.seg_len
+  let c = geom.combos.length()
+  // a crossed window factor has no level during the preamble, so the
+  // crossing covers the trials after it
+  let pre:
+    for values(m = 0) (k in 0..geom.cross_idx.length()):
+      let p = geom.preamble[geom.cross_idx[k]]
+      if p > m | p | m
+  let len = geom.seg_len - pre
+  // How many trials one full crossing takes, and how many of them each
+  // combination is entitled to: the product of its levels' weights. With
+  // every weight 1 this is one trial per combination, as usual.
+  fun weight_of(j):
+    for values(w = 1) (k in 0..geom.cross_idx.length()):
+      w * geom.factors[geom.cross_idx[k]].weights[geom.combos[j][k]]
+  let full:
+    for values(t = 0) (j in 0..c): t + weight_of(j)
   let per_combo:
     let nested:
       for List (s in 0..n_seg):
-        for List (j in 0..geom.combos.length()):
+        for List (j in 0..c):
           let atoms:
-            for List (k in 0..geom.seg_len):
+            for List (k in pre..geom.seg_len):
+              Comb(s * geom.seg_len + k, j)
+          // this combination's share of the segment, rounded both ways
+          let share = len * weight_of(j)
+          let lo = share div full
+          let hi = if share mod full == 0 | lo | lo + 1
+          Req(atoms, lo, hi)
+    List.append(& nested)
+  let per_trial:
+    let nested:
+      for List (s in 0..n_seg):
+        for List (k in pre..geom.seg_len):
+          let atoms:
+            for List (j in 0..geom.combos.length()):
               Comb(s * geom.seg_len + k, j)
           exactly(1, atoms)
     List.append(& nested)
-  let per_trial:
-    for List (i in 0..geom.n_trials):
-      let atoms:
-        for List (j in 0..geom.combos.length()):
-          Comb(i, j)
-      exactly(1, atoms)
   per_combo ++ per_trial
 
 // NOTE: a Comb atom names a combination of the CROSSED factors only.
@@ -215,9 +413,18 @@ constraint exclude(f, lvl) ~given geom:
   [at_most(0, atoms)]
 
 // a level pinned to a particular trial
+// A negative index counts back from the end, as in SweetPea: -1 is the last
+// trial. An index outside the sequence gives a design with no solution
+// rather than an error, which is also what SweetPea documents -- so the
+// bound is resolved here, before any atom is built, and never reaches the
+// atom check in reqs_of.
 constraint pin(i, f, lvl) ~given geom:
   let fi = index_of_factor(geom, f)
-  [at_least(1, [Lev(i, fi, index_of_level(geom, fi, lvl))])]
+  let li = index_of_level(geom, fi, lvl)
+  let at = if i < 0 | geom.n_trials + i | i
+  if at < 0 || at >= geom.n_trials
+  | [impossible(Lev(0, fi, li))]
+  | [at_least(1, [Lev(at, fi, li)])]
 
 // No two consecutive trials share a level of factor `fi`.
 // This is AtMostKInARow with k = 1: over each window of two adjacent
@@ -233,6 +440,10 @@ fun target_levels(geom, target):
       let fi = index_of_factor(geom, f)
       values(fi, [index_of_level(geom, fi, lvl)])
   | ~else:
+      when target is_a List
+      | error("a run-length constraint takes a factor or a [factor, level]"
+                ++ " pair; this is a list of length "
+                ++ to_string(target.length()) ++ ": " ++ to_string(target))
       let fi = index_of_factor(geom, target)
       let all:
         for List (li in 0..geom.counts[fi]):
@@ -268,6 +479,35 @@ fun runs_at_least(geom, fi, li, k):
       | [at_least(1, starts)]
   List.append(& nested)
 
+// Every run of this level has a length that is a multiple of k. SweetPea's
+// ExactlyKMultipleInARow, which it uses internally and does not document.
+//
+// A run is at least k long, and then, wherever it is still going after a
+// further multiple of k, it must continue for a whole k more. Both halves
+// are clauses over the same run-start literals, so this needs nothing new.
+fun runs_multiple_of(geom, fi, li, k):
+  let n = geom.n_trials
+  fun x(i): Lev(i, fi, li)
+  let extra:
+    let nested:
+      for List (i in 0..n):
+        let starts = if i == 0 | [Not(x(0))] | [Not(x(i)), x(i - 1)]
+        let per_m:
+          for List (m in 1..((n div k) + 1)):
+            let at = i + m * k
+            if at >= n
+            | []
+            | // the run reaches `at`, so it owes another whole k
+              let per_j:
+                for List (j in 1..k):
+                  if at + j < n
+                  | at_least(1, starts ++ [Not(x(at)), x(at + j)])
+                  | at_least(1, starts ++ [Not(x(at))])
+              per_j
+        List.append(& per_m)
+    List.append(& nested)
+  runs_at_least(geom, fi, li, k) ++ extra
+
 fun over_targets(geom, target, per_level):
   let (fi, lis) = target_levels(geom, target)
   let nested:
@@ -276,14 +516,27 @@ fun over_targets(geom, target, per_level):
   List.append(& nested)
 
 constraint at_most_k_in_a_row(k, target) ~given geom:
+  when k < 1
+  | error("at_most_k_in_a_row: k must be at least 1, not " ++ to_string(k)
+            ++ "; to say a level never appears, use exclude")
   over_targets(geom, target, fun (fi, li): runs_at_most(geom, fi, li, k))
 
 constraint at_least_k_in_a_row(k, target) ~given geom:
+  when k < 1
+  | error("at_least_k_in_a_row: k must be at least 1, not " ++ to_string(k))
   over_targets(geom, target, fun (fi, li): runs_at_least(geom, fi, li, k))
 
 // Exactly k is at most k and at least k. Both halves are already declared,
 // so this composes them rather than restating either.
+constraint exactly_k_multiple_in_a_row(k, target) ~given geom:
+  when k < 1
+  | error("exactly_k_multiple_in_a_row: k must be at least 1, not "
+            ++ to_string(k))
+  over_targets(geom, target, fun (fi, li): runs_multiple_of(geom, fi, li, k))
+
 constraint exactly_k_in_a_row(k, target) ~given geom:
+  when k < 1
+  | error("exactly_k_in_a_row: k must be at least 1, not " ++ to_string(k))
   over_targets(geom, target,
                fun (fi, li):
                  runs_at_most(geom, fi, li, k)
@@ -316,17 +569,39 @@ constraint sustained(f) ~given geom:
   List.append(& nested)
 
 // Each level of the outer factor is used by exactly one segment.
-constraint outer_crossed(f) ~given geom:
-  let fi = index_of_factor(geom, f)
+// Each combination of the outer factors holds for exactly one segment. With
+// one outer factor that is "each of its levels gets a segment"; with several
+// it is their crossing, which is what SweetPea's outer block does, since the
+// outer of a Nest is a block and may cross more than one factor. A
+// combination of several factors is one All atom -- the same conjunction
+// atom the coverage requirement uses.
+fun outer_combinations(geom, target):
+  // one factor or a list of them, so `sequential(session)` still reads the
+  // way it always did
+  let fs = if target is_a List | target | [target]
+  let idx = for List (f in fs): index_of_factor(geom, f)
+  let counts = for List (fi in idx): geom.counts[fi]
+  values(idx, all_tuples(counts))
+
+fun segment_holds(geom, idx, t, s):
+  let atoms:
+    for List (k in 0..idx.length()):
+      Lev(s * geom.seg_len, idx[k], t[k])
+  // one factor needs no conjunction, and a plain literal is cheaper
+  if atoms.length() == 1 | atoms[0] | All(atoms)
+
+constraint outer_crossed(fs) ~given geom:
   let n_seg = geom.n_trials / geom.seg_len
-  for List (li in 0..geom.counts[fi]):
+  let (idx, tuples) = outer_combinations(geom, fs)
+  for List (t in tuples):
     let atoms:
       for List (s in 0..n_seg):
-        Lev(s * geom.seg_len, fi, li)
+        segment_holds(geom, idx, t, s)
     exactly(1, atoms)
 
-// The levels of a sustained factor appear in declaration order, one per
-// segment, wrapping around. This is SweetPea's `Sequential`.
+// The segments take the outer combinations in order, cycling: SweetPea's
+// `Sequential`, generalized from one factor to the crossing of several,
+// which runs through them in the order the factors were declared.
 //
 // Note what is NOT here: any statement of what a checker should verify.
 // "segment s carries level s mod n" is written once. SweetPea wrote it
@@ -334,19 +609,126 @@ constraint outer_crossed(f) ~given geom:
 // trial index by the segment length, and :1487 forgot to divide -- and the
 // two disagreed for months, with RandomGen silently returning the levels in
 // the wrong order. That divergence has nowhere to live here.
-constraint sequential(f) ~given geom:
-  let fi = index_of_factor(geom, f)
+constraint sequential(fs) ~given geom:
   let n_seg = geom.n_trials / geom.seg_len
-  let n = geom.counts[fi]
+  let (idx, tuples) = outer_combinations(geom, fs)
+  let n = tuples.length()
   for List (s in 0..n_seg):
-    at_least(1, [Lev(s * geom.seg_len, fi, s mod n)])
+    at_least(1, [segment_holds(geom, idx, tuples[s mod n], s)])
 
 // Exactly k trials carry this level. Needs the counter encoding for k >= 2;
 // `holds_in` needed no change at all, because checking is still counting.
+// ------------------------------------------------------- Latin square
+// SweetPea's LatinSquare(factors), for two factors with the same number of
+// levels N. The sequence is read as rows of N trials -- SweetPea's guide
+// calls a row a participant, who sees one diagonal of the crossing and so
+// sees every level of every factor without seeing every combination. The
+// definition has three parts:
+//
+//   1. every row holds every level of every one of the factors
+//   2. within a row, the second factor follows the first by a constant
+//      offset -- the row is one diagonal of the crossing
+//   3. consecutive rows take consecutive offsets, and all offsets are used
+//      before any repeats, but where the cycle starts is the solver's choice,
+//      so the pattern does not depend on the order the levels were declared
+//
+// The documentation does not say which way round the cycle turns, and the
+// two directions give different sets of sequences. SweetPea's answer was
+// settled by asking its own checker: at N = 3 and N = 4, from either start,
+// it accepts offsets that step DOWN by one per row and rejects offsets that
+// step up. Hence the bump of -1 below. See tests/latin_square.rhm.
+//
+// Part 2 is what makes a row a Latin square row rather than any pair of
+// permutations, and it is stated without an offset variable: fix the row's
+// first trial as a reference, and every other trial in the row must carry
+// the offset that trial establishes. That is a clause over four literals,
+// so it needs nothing from the encoder beyond the Not atoms already there.
+//
+// The offset of row r+1 is the offset of row r less one, which is part 3
+// with the same clause shape and a bump of -1. Distinctness of the offsets
+// follows, rather than being asserted separately.
+
+// Given factor a and b at the reference trial i0, trial i must pair its
+// own a-level with the b-level that keeps the offset (plus `bump`).
+fun offset_tie(i0, i, a_fi, b_fi, n_a, n_b, bump):
+  let nested:
+    for List (a0 in 0..n_a):
+      let inner:
+        for List (b0 in 0..n_b):
+          for List (a in 0..n_a):
+            let want = (a + b0 - a0 + bump + n_a * n_b + n_b) mod n_b
+            at_least(1, [Not(Lev(i0, a_fi, a0)),
+                         Not(Lev(i0, b_fi, b0)),
+                         Not(Lev(i, a_fi, a)),
+                         Lev(i, b_fi, want)])
+      List.append(& inner)
+  List.append(& nested)
+
+// Each level of this factor appears the same number of times in each row:
+// once when it has as many levels as the row is long, and row/levels times
+// when it has fewer -- which is how a shorter factor fills a longer row.
+fun row_shares(fi, n_levels, n, rows):
+  let share = n div n_levels
+  let nested:
+    for List (r in 0..rows):
+      for List (l in 0..n_levels):
+        let atoms:
+          for List (c in 0..n):
+            Lev(r * n + c, fi, l)
+        exactly(share, atoms)
+  List.append(& nested)
+
+constraint latin_square(fs) ~given geom:
+  when fs.length() != 2
+  | error("latin_square: this encoding takes two factors, got "
+            ++ to_string(fs.length())
+            ++ "; SweetPea generalizes by giving each factor other than the"
+            ++ " longest its own rotation and stepping the vector of them"
+            ++ " like an odometer, which is not implemented here")
+  // The row is as long as the factor with the most levels -- SweetPea calls
+  // that the diagonal length -- and that factor drives the pattern.
+  let f0 = index_of_factor(geom, fs[0])
+  let f1 = index_of_factor(geom, fs[1])
+  let (a_fi, b_fi):
+    if geom.counts[f0] >= geom.counts[f1] | values(f0, f1) | values(f1, f0)
+  let n = geom.counts[a_fi]
+  let n_b = geom.counts[b_fi]
+  when n mod n_b != 0
+  | error("latin_square: `" ++ geom.factors[a_fi].name ++ "` has "
+            ++ to_string(n) ++ " levels and `" ++ geom.factors[b_fi].name
+            ++ "` has " ++ to_string(n_b)
+            ++ "; the shorter must divide the longer, so that each of its"
+            ++ " levels fills the same share of a row")
+  when geom.n_trials mod n != 0
+  | error("latin_square: " ++ to_string(geom.n_trials)
+            ++ " trials is not a whole number of rows of " ++ to_string(n))
+  let rows = geom.n_trials / n
+  let perms = row_shares(a_fi, n, n, rows) ++ row_shares(b_fi, n_b, n, rows)
+  let within_rows:
+    let nested:
+      for List (r in 0..rows):
+        let nested2:
+          for List (c in 1..n):
+            offset_tie(r * n, r * n + c, a_fi, b_fi, n, n_b, 0)
+        List.append(& nested2)
+    List.append(& nested)
+  let across_rows:
+    let nested:
+      for List (r in 0..(rows - 1)):
+        offset_tie(r * n, (r + 1) * n, a_fi, b_fi, n, n_b, -1)
+    List.append(& nested)
+  perms ++ within_rows ++ across_rows
+
 constraint exactly_k(k, f, lvl) ~given geom:
+  when k < 0
+  | error("exactly_k: k cannot be negative, got " ++ to_string(k))
   let fi = index_of_factor(geom, f)
   let li = index_of_level(geom, fi, lvl)
   let atoms:
     for List (i in 0..geom.n_trials):
       Lev(i, fi, li)
-  [exactly(k, atoms)]
+  // asking for more occurrences than there are trials is a design with no
+  // solution, not an error
+  if k > geom.n_trials
+  | [impossible(Lev(0, fi, li))]
+  | [exactly(k, atoms)]

@@ -1,0 +1,64 @@
+#lang rhombus
+// A level that looks at the previous trial: SweetPea's Transition, and its
+// generalization Window.
+//
+// `~width 2` means each predicate sees two consecutive trials of each parent
+// factor, oldest first. So the factor answers a question about a pair of
+// trials rather than one trial, which is how designs ask about repetition,
+// switching, or a run.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue", "green"]
+
+factor repetition(color) ~width 2:
+  [derived same(prev, now): prev == now,
+   derived switch(prev, now): prev != now]
+
+// Balancing colour against repetition is the usual reason to want this.
+experiment plan:
+  ~design: [color, repetition]
+  ~cross: [color, repetition]
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+
+println("3 colours x 2 repetition levels = 6 combinations.")
+println("repetition has no value on the first trial of the sequence -- its")
+println("window reaches back past the start -- so the design is 6 + 1 = "
+          ++ to_string(g.n_trials) ++ " trials.")
+println("That leading trial is SweetPea's preamble; its preamble sizes here")
+println("are " ++ to_string(g.preamble) ++ ", one per design factor.\n")
+
+fun show(s):
+  for (i in 0..s.length()):
+    let t = s[i]
+    println("   " ++ to_string(i) ++ "   " ++ t[0]
+              ++ (for values(acc = "") (k in 0..(8 - t[0].length())): acc ++ " ")
+              ++ (if t[1] == #false | "(no value yet)" | t[1]))
+
+let one = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
+show(one)
+
+// A window factor is a factor, so constraints apply to it with no special
+// case -- this asks for the repetitions never to come in pairs.
+println("")
+println("with pin(1, repetition, repetition.same), so the second trial must")
+println("repeat the first colour:")
+let alt = synthesize_trials(plan, 1,
+                            ~constraints: [pin(1, repetition, repetition.same)],
+                            ~strategy: #'iterate, ~solver: S)
+if alt.length() == 0
+| println("   none")
+| show(alt[0])
+
+// The checker reads the same requirements, so it can judge a sequence
+// somebody else produced -- including whether the derived column is right.
+println("")
+let wrong:
+  for List (i in 0..one.length()):
+    if i == 2 | [one[2][0], (if one[2][1] == "same" | "switch" | "same")] | one[i]
+println("flipping the repetition value on trial 2 gives: "
+          ++ to_string(check_sequence(plan, wrong)))

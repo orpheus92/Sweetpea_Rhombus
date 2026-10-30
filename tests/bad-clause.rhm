@@ -1,0 +1,13 @@
+#lang rhombus
+// A clause the experiment form does not know. Writing ~min_trial for
+// ~min_trials, or any other slip, must not be silently ignored -- it must
+// fail to compile.
+import: "../sweetpea.rhm" open
+
+factor color: ["red", "blue"]
+experiment plan:
+  ~design: [color]
+  ~cross: [color]
+  ~min_trial: 6
+
+println("if this prints, the unknown clause was ignored")
