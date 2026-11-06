@@ -28,7 +28,7 @@ export:
 class Factor(name, levels, params, width, weights, stride, start)
 class DerivedLevel(name, arity, predicate)
 class Experiment(name, design, cross, constraints, within, in_order, min_trials,
-                 cover)
+                 cover, complete_crossing)
 
 // A plain level is its own value, a string. A derived level is an object
 // carrying a predicate, and its value is its name -- so a trial reads the
@@ -225,10 +225,12 @@ defn.macro 'experiment $name:
       | '~constraints: $x': ["constraints", x]
       | '~min_trials: $x': ["min_trials", x]
       | '~cover: $x': ["cover", x]
+      | '~require_complete_crossing: $x': ["complete", x]
       | ~else:
           error("experiment " ++ s ++ ": unrecognized clause `"
                   ++ to_string(c) ++ "`; expected ~design, ~cross, ~within,"
-                  ++ " ~min_trials, ~cover or ~constraints")
+                  ++ " ~min_trials, ~cover, ~require_complete_crossing"
+                  ++ " or ~constraints")
   fun one(kind):
     for values(found = #false) (p in parsed):
       if p[0] == kind | p[1] | found
@@ -270,9 +272,11 @@ defn.macro 'experiment $name:
   let cons = one("constraints")
   let mt = one("min_trials")
   let cv = one("cover")
+  let rcc = one("complete")
   'def $name = Experiment($s, $design, $cross,
                           $(if cons | cons | '[]'),
                           $(if within | within | '#false'),
                           $(if w_ordered | '#true' | '#false'),
                           $(if mt | mt | '#false'),
-                          $(if cv | cv | '#false'))'
+                          $(if cv | cv | '#false'),
+                          $(if rcc | rcc | '#true'))'

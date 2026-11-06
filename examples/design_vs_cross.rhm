@@ -18,8 +18,8 @@ println("trials = " ++ to_string(geometry_of(plan).n_trials)
           ++ "   (2x2 from the crossing, not 2x2x2 from the design)\n")
 
 println("~strategy: #'iterate")
-for (s in synthesize_trials(plan, 2, ~strategy: #'iterate, ~solver: S)):
-  println("  " ++ to_string(s))
+print_experiments(plan, synthesize_trials(plan, 2, ~strategy: #'iterate,
+                                          ~solver: S))
 
 println("\n~strategy: #'random  (hand should vary freely)")
 let rs = synthesize_trials(plan, 4, ~strategy: #'random)

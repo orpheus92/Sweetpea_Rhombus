@@ -1,0 +1,109 @@
+#lang rhombus
+// The same question asked at three widths, side by side.
+//
+//   ~width 1   about this trial only          SweetPea's WithinTrial
+//   ~width 2   about this trial and the last  SweetPea's Transition
+//   ~width 3   about three trials             SweetPea's Window
+//
+// What changes with the width is how far back the predicate reads, and
+// therefore how many trials at the start of the design the factor has no
+// value for at all -- SweetPea's preamble. Width 1 has none, width 2 leaves
+// the first trial empty, width 3 the first two.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+
+// width 1: is this trial red?
+factor is_red(color) ~width 1:
+  [derived yes(c): c == "red",
+   else no]
+
+// width 2: did the colour repeat? (a Transition)
+factor repeated(color) ~width 2:
+  [derived same(prev, now): prev == now,
+   else switch]
+
+// width 3: were the last three all one colour? (a Window)
+factor run_of_3(color) ~width 3:
+  [derived run(a, b, c): a == b && b == c,
+   else mixed]
+
+// Only colour is crossed, so the three derived factors just follow along.
+// ~min_trials gives the window factors room to say something.
+experiment plan:
+  ~design: [color, is_red, repeated, run_of_3]
+  ~cross: [color]
+  ~min_trials: 6
+
+let S = "cryptominisat5"
+let g = geometry_of(plan)
+
+fun pad(str, n):
+  for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
+
+println("6 trials, three reds and three blues (the crossing says that much).")
+println("")
+println("Where each factor's values begin:")
+for (i in 0..g.factors.length()):
+  println("   " ++ pad(g.factors[i].name, 10) ++ " width "
+            ++ to_string(g.factors[i].width)
+            ++ "   first value at trial " ++ to_string(g.preamble[i]))
+println("")
+
+let trials = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
+print_trials(plan, trials)
+println("")
+println("An empty cell is not a missing answer, it is no question:")
+println("`repeated` compares this trial with the one before, and the first")
+println("trial has none.")
+
+// Read the same thing off the colour column by hand, to show the columns
+// are not decoration.
+println("")
+let colours = for List (t in trials): t[0]
+println("colour column:        " ++ to_string(colours))
+let by_hand:
+  for List (i in 0..colours.length()):
+    if i == 0
+    | "-"
+    | (if colours[i] == colours[i - 1] | "same" | "switch")
+println("repeated, recomputed: " ++ to_string(by_hand))
+let from_design: for List (t in trials): (if t[2] == #false | "-" | t[2])
+println("repeated, as derived: " ++ to_string(from_design))
+println("  equal: " ++ to_string(by_hand == from_design))
+
+// The checker reads the same requirements, so a wrong value in any of the
+// three columns is caught, and it names the requirement that caught it.
+println("")
+let tampered:
+  for List (i in 0..trials.length()):
+    let t = trials[i]
+    if i == 3
+    | [t[0], t[1], (if t[2] == "same" | "switch" | "same"), t[3]]
+    | t
+println("flipping `repeated` on trial 3 -> "
+          ++ to_string(check_sequence(plan, tampered)))
+let filled:
+  for List (i in 0..trials.length()):
+    let t = trials[i]
+    if i == 0 | [t[0], t[1], "same", t[3]] | t
+println("giving trial 0 a `repeated` value -> "
+          ++ to_string(check_sequence(plan, filled)))
+
+// A window factor is a factor: constraints name it like any other. Asking
+// for the colour never to repeat makes `repeated` constant, which is a way
+// of seeing that the column really does track the colour column.
+println("")
+let alt = synthesize_trials(plan, 1, ~constraints: [no_repeats(color)],
+                            ~strategy: #'iterate, ~solver: S)
+if alt.length() == 0
+| println("no_repeats(color): no sequence")
+| println("with no_repeats(color), so the colour alternates:")
+  println("   colour:   " ++ to_string(for List (t in alt[0]): t[0]))
+  println("   repeated: " ++ to_string(for List (t in alt[0]):
+                                         (if t[2] == #false | "-" | t[2])))
+  println("   run_of_3: " ++ to_string(for List (t in alt[0]):
+                                         (if t[3] == #false | "-" | t[3])))

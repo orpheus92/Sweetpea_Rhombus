@@ -104,7 +104,19 @@ producing nonsense.
     cd Sweetpea_Rhombus
     racket examples/pilot.rhm
 
-Expect three four-trial sequences. If that works, everything is installed.
+Expect a table of three four-trial sequences:
+
+    3 trial sequences found.
+
+    Experiment 1:
+        color  size
+        -----  -----
+    1   blue   large
+    2   blue   small
+    3   red    large
+    4   red    small
+
+If that works, everything is installed.
 
 ---
 
@@ -309,15 +321,66 @@ ordinary variables and the crossing never learns where they came from:
 `tests/derived.rhm` covers all four. The exception is a strided factor, for
 the reason above.
 
-One difference from SweetPea. If a crossed combination cannot occur --
-because it contradicts a derived level's predicate -- the design here has no
-solution. SweetPea's `CrossBlock` behaves the same way by default, but takes
-`require_complete_crossing=False` to drop the impossible combinations and
-shrink the crossing, and there is no equivalent here yet. The realizability
-test that `~cover` already performs is what such an option would need.
+If a crossed combination cannot occur -- because it contradicts a derived
+level's predicate -- the design has no solution, which is also what
+SweetPea's `CrossBlock` does by default. Saying so explicitly drops those
+combinations instead and crosses what is left:
+
+    experiment plan:
+      ~design: [color, word, allowed]
+      ~cross: [color, word]
+      ~require_complete_crossing: #false     // SweetPea's CrossBlock flag
+
+The case that matters is a crossing naming a derived factor **and** its
+parents: crossing colour, word and congruency together names eight
+combinations, and four of them contradict the predicate -- `(red, red, inc)`
+cannot happen. Required complete, that design has no solution; relaxed, it
+crosses the four consistent combinations in four trials.
+
+The test is exactly that: a derived factor whose parents are all crossed is
+determined by the combination, and if the combination also names a level for
+it and the two disagree, no trial can hold it. A derived factor the
+combination does not name, or whose parents are not all crossed, is left
+alone. A crossing with nothing left is refused rather than silently empty.
+
+One difference to know. SweetPea requires a derived factor's levels to be
+exhaustive -- for every combination of its parents exactly one level must
+match. This does not require that: a parent combination that no level
+matches is treated as one that cannot occur, which is a convenient way to
+exclude a combination and is what `tests/derived.rhm` relies on. Such a
+combination is unrealizable here too, so it is dropped under this keyword
+as well.
+
+Dropping combinations also simplified the crossing's size: a combination is
+worth the product of its levels' weights, and the crossing takes the sum of
+those over the combinations that remain. With all of them present and every
+weight 1, that is the product of the level counts, as before.
+`tests/partial_crossing.rhm` covers both settings.
 
 `examples/derived_chain.rhm` runs a chain, a stride and an `else` level
 through one design and prints which factor is scored where.
+
+## Printing trials
+
+    print_experiments(plan, synthesize_trials(plan, 3))
+    print_trials(plan, one_sequence)
+
+A sequence read as a table rather than a list of lists, which is SweetPea's
+`print_experiments` give or take the trial numbers:
+
+    3 trial sequences found.
+
+    Experiment 1:
+        color  word   congruency
+        -----  -----  ----------
+    1   red    red    con
+    2   red    blue   inc
+    3   blue   blue   con
+
+A factor with no value in a trial leaves its cell empty -- a window factor
+before its window fits, a strided factor between its scored trials. Under
+`~within`, a blank line separates the segments, so a nested design reads as
+sessions.
 
 ## Generating trials
 
@@ -468,9 +531,7 @@ genuine constraint, since it constrains trials relative to each other.
     ContinuousConstraint  continuous factors are not in the encoding at all
     LatinSquare           three or more factors, which needs the odometer
                           over the rotations of all but the longest
-    CrossBlock            require_complete_crossing=False, which drops the
-                          combinations a derived predicate rules out instead
-                          of leaving the design unsatisfiable
+    MultiCrossBlock       more than one crossing over the same design
 
 ## Sampling strategies
 
@@ -590,6 +651,8 @@ Two strategies, two independent code paths, one declaration.
     racket examples/stroop.rhm            the notation, incl. derived factors
     racket examples/transition.rhm        a level that reads the previous trial
     racket examples/derived_chain.rhm     derived chains, strides, else levels
+    racket examples/widths.rhm            width 1, 2 and 3 side by side
+    racket examples/partial_crossing.rhm  ~require_complete_crossing
 
     bash tests/run-tests.sh               everything below, in one go
                                           (plus the bad-*.rhm designs, which
@@ -604,6 +667,7 @@ Two strategies, two independent code paths, one declaration.
     racket tests/window.rhm               windows and the preamble, brute-forced
     racket tests/weights.rhm              weighted crossings, brute-forced
     racket tests/cover.rhm                ~cover, brute-forced
+    racket tests/partial_crossing.rhm     ~require_complete_crossing
     racket tests/nest.rhm                 ~within with several factors
     racket tests/derived_shapes.rhm       derived chains, strides, else levels
     racket tests/min_trials.rhm           ~min_trials, against a hand count

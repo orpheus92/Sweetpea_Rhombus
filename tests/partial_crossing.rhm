@@ -1,0 +1,138 @@
+#lang rhombus
+// ~require_complete_crossing, which is SweetPea's
+// CrossBlock(..., require_complete_crossing=...).
+//
+// A derived factor whose parents are all crossed is settled by the crossing
+// combination. If none of its levels fits, no trial can hold that
+// combination -- `consistent` still wants one level of the derived factor --
+// so with the crossing required complete the design has no solution. Setting
+// the keyword to #false drops those combinations and crosses what is left,
+// which is how a derived factor is used to exclude a combination.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+let S = "cryptominisat5"
+fun report(label, ok): println((if ok | "  ok    " | "  FAIL  ") ++ label)
+
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+
+// one level, which fits every parent combination except red with red
+factor allowed(color, word):
+  [derived ok(a, b): !(a == "red" && b == "red")]
+
+// ============================ 1. required complete: no solution
+experiment strict:
+  ~design: [color, word, allowed]
+  ~cross: [color, word]
+
+let gs = geometry_of(strict)
+let got_strict = synthesize_trials(strict, 10, ~strategy: #'iterate, ~solver: S)
+let r1 = gs.n_trials == 4 && got_strict.length() == 0
+report("complete crossing demanded: " ++ to_string(gs.n_trials)
+         ++ " trials and " ++ to_string(got_strict.length())
+         ++ " sequences, since red/red cannot occur", r1)
+
+// ============================ 2. not required: the crossing shrinks
+experiment relaxed:
+  ~design: [color, word, allowed]
+  ~cross: [color, word]
+  ~require_complete_crossing: #false
+
+let gr = geometry_of(relaxed)
+let got = synthesize_trials(relaxed, 50, ~strategy: #'iterate, ~solver: S)
+// three combinations survive, so three trials, and red/red appears in none
+let no_red_red:
+  for values(ok = #true) (s in got):
+    for values(o = ok) (t in s):
+      o && !(t[0] == "red" && t[1] == "red")
+let each_once:
+  for values(ok = #true) (s in got):
+    for values(o = ok) (p in [["red", "blue"], ["blue", "red"], ["blue", "blue"]]):
+      let n:
+        for values(m = 0) (t in s): if t[0] == p[0] && t[1] == p[1] | m + 1 | m
+      o && n == 1
+let r2 = gr.n_trials == 3 && got.length() == 6 && no_red_red && each_once
+report("crossing not required complete: " ++ to_string(gr.n_trials)
+         ++ " trials, " ++ to_string(got.length())
+         ++ " sequences (3! = 6), each surviving pair once and red/red never",
+       r2)
+
+// the derived column still follows its predicate
+let derived_ok:
+  for values(ok = #true) (s in got):
+    for values(o = ok) (t in s): o && t[2] == "ok"
+report("the derived factor still holds in every trial", derived_ok)
+
+// and the checker agrees about the shorter design
+let checked:
+  for values(ok = #true) (s in got): ok && check_sequence(relaxed, s) == []
+let r3 = derived_ok && checked
+report("the checker accepts what the solver produced", r3)
+
+// a sequence that smuggles red/red in is rejected
+let smuggled = [["red", "red", "ok"], ["red", "blue", "ok"], ["blue", "red", "ok"]]
+let r4 = check_sequence(relaxed, smuggled) != []
+report("a sequence containing red/red is rejected: "
+         ++ to_string(check_sequence(relaxed, smuggled)), r4)
+
+// ============================ 3. the keyword changes nothing otherwise
+// With no derived factor to rule anything out, the two settings agree.
+experiment plain_strict:
+  ~design: [color, word]
+  ~cross: [color, word]
+experiment plain_relaxed:
+  ~design: [color, word]
+  ~cross: [color, word]
+  ~require_complete_crossing: #false
+let a = synthesize_trials(plain_strict, 100, ~strategy: #'iterate, ~solver: S)
+let b = synthesize_trials(plain_relaxed, 100, ~strategy: #'iterate, ~solver: S)
+let r5 = geometry_of(plain_strict).n_trials == geometry_of(plain_relaxed).n_trials
+           && a.length() == 24 && b.length() == 24
+report("with nothing to drop, the two settings agree: "
+         ++ to_string(a.length()) ++ " and " ++ to_string(b.length()), r5)
+
+// ============================ 4. weights still count
+// red carries weight 2, so the surviving combinations are worth 1 + 2 + 1.
+factor heavy: ["red" ~weight 2, "blue"]
+factor allowed2(heavy, word):
+  [derived ok2(a, b): !(a == "red" && b == "red")]
+experiment weighted:
+  ~design: [heavy, word, allowed2]
+  ~cross: [heavy, word]
+  ~require_complete_crossing: #false
+let gw = geometry_of(weighted)
+let gotw = synthesize_trials(weighted, 50, ~strategy: #'iterate, ~solver: S)
+let shape:
+  for values(ok = #true) (s in gotw):
+    let n_rb:
+      for values(m = 0) (t in s): if t[0] == "red" && t[1] == "blue" | m + 1 | m
+    ok && n_rb == 2
+let r6 = gw.n_trials == 4 && gotw.length() > 0 && shape
+report("weights still count: " ++ to_string(gw.n_trials)
+         ++ " trials (1 + 2 + 1) and red/blue twice in each", r6)
+
+// ============================ 5. nothing left to cross
+factor never(color, word):
+  [derived impossible(a, b): a == "green"]
+experiment empty_cross:
+  ~design: [color, word, never]
+  ~cross: [color, word]
+  ~require_complete_crossing: #false
+fun caught(thunk):
+  try:
+    thunk()
+    #false
+    ~catch e: Exn.message(e)
+let msg = caught(fun (): geometry_of(empty_cross))
+let r7 = msg && to_string(msg).contains("nothing to cross")
+report("a crossing with no possible combination is refused", r7)
+when !r7
+| println("          got " ++ (if msg | to_string(msg) | "no error"))
+
+let results = [r1, r2, r3, r4, r5, r6, r7]
+let bad: for values(n = 0) (x in results): if x | n | n + 1
+println("")
+println(if bad == 0 | "~require_complete_crossing drops what cannot occur" | to_string(bad) ++ " FAILED")

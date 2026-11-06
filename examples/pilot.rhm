@@ -11,6 +11,4 @@ experiment plan:
   ~cross: [color, size]
 
 let trials = synthesize_trials(plan, 3, ~solver: "cryptominisat5")
-println("sequences found: " ++ to_string(trials.length()))
-for (t in trials):
-  println("  " ++ to_string(t))
+print_experiments(plan, trials)

@@ -6,6 +6,8 @@ import:
 
 export:
   synthesize_trials
+  print_trials
+  print_experiments
   derivation
   cover_all_combinations
   check_sequence
@@ -74,6 +76,56 @@ fun plain(f :: Factor) :: Factor:
   Factor(f.name, for List (l in f.levels): level_value(l), f.params, f.width, ws,
          f.stride, f.start)
 
+// Whether a combination of the crossed factors can occur at all.
+//
+// A derived factor whose parents are all crossed is determined by the
+// combination. If the combination also names a level for that factor and
+// the two disagree, no trial can hold it: the derivation requirement says
+// one thing and the crossing another. That is the combination SweetPea
+// calls excluded or inconsistent, and drops when require_complete_crossing
+// is false. Crossing colour, word and congruency together is the case that
+// matters -- four of its eight combinations contradict the predicate.
+//
+// A derived factor the combination does not name, or whose parents are not
+// all crossed, is not decided here and is left alone. A level with no
+// predicate -- an `else` level -- fits whatever the others do not.
+//
+// SweetPea also requires a derived factor's levels to be exhaustive: for
+// every combination of its parents exactly one level must match. This does
+// not require that, treating a parent combination no level matches as one
+// that cannot occur, which is a deliberate difference and a convenient way
+// to exclude a combination. Such a combination is unrealizable here too.
+fun crossing_realizable(design :: List, cross_idx :: List, t :: List) :: Boolean:
+  fun crossed_slot(nm):
+    for values(found = -1) (k in 0..cross_idx.length()):
+      if design[cross_idx[k]].name == nm | k | found
+  for values(ok = #true) (d in design):
+    if d.params == [] || d.width != 1
+    | ok
+    | let slots: for List (p in d.params): crossed_slot(p.name)
+      if slots.contains(-1)
+      | ok                        // its parents are not all crossed
+      | let vals:
+          for List (k in slots):
+            level_value(design[cross_idx[k]].levels[t[k]])
+        // the level the predicates pick for these parents, if any
+        let determined:
+          for values(found = #false) (l in 0..d.levels.length()):
+            let p2 = d.levels[l].predicate
+            let here = if p2 && p2(& vals) | level_value(d.levels[l]) | #false
+            if found | found | here
+        let fallback:
+          for values(found = #false) (l in 0..d.levels.length()):
+            if found | found | (if d.levels[l].predicate
+                                | #false
+                                | level_value(d.levels[l]))
+        let value = if determined | determined | fallback
+        let mine = crossed_slot(d.name)
+        cond
+        | !value: #false          // no level matches: this cannot occur
+        | mine < 0: ok            // the combination says nothing about it
+        | ~else: ok && value == level_value(d.levels[t[mine]])
+
 fun geometry_of(exp :: Experiment) :: Geom:
   let counts = for List (f in exp.design): f.levels.length()
   // which design positions are crossed
@@ -86,16 +138,31 @@ fun geometry_of(exp :: Experiment) :: Geom:
   when cross_idx.length() == 0
   | error("synthesize_trials: ~cross is empty")
   let cross_counts = for List (fi in cross_idx): counts[fi]
+  // Which combinations the crossing is over. With ~require_complete_crossing
+  // left true -- SweetPea's default as well -- that is all of them, and a
+  // combination that cannot occur leaves the design with no solution. Set it
+  // to #false and the combinations that cannot occur are dropped instead,
+  // and the crossing is over what is left.
+  let all_combos = combinations(cross_counts)
+  let combos:
+    if exp.complete_crossing
+    | all_combos
+    | all_combos.filter(
+        ~keep: fun (t): crossing_realizable(exp.design, cross_idx, t))
+  when combos.length() == 0
+  | error("experiment " ++ exp.name ++ ": no combination of the crossed"
+            ++ " factors can occur, so there is nothing to cross")
   // A level of weight w is combined w times with each combination of the
-  // other crossed factors' levels, so the crossing takes as many trials as
-  // the product of the weight sums, while the set of distinct combinations
-  // is still the product of the level counts.
-  let weight_sums:
-    for List (fi in cross_idx):
-      let f = exp.design[fi]
-      for values(t = 0) (li in 0..counts[fi]):
-        t + (if li < f.weights.length() | f.weights[li] | 1)
-  let crossing_size = product(weight_sums)
+  // other crossed factors' levels, so a combination is worth the product of
+  // its levels' weights and the crossing takes the sum of those. With every
+  // combination present and every weight 1 that is the product of the level
+  // counts, as usual.
+  fun combo_weight(t):
+    for values(w = 1) (k in 0..cross_idx.length()):
+      let f = exp.design[cross_idx[k]]
+      w * (if t[k] < f.weights.length() | f.weights[t[k]] | 1)
+  let crossing_size:
+    for values(tot = 0) (t in combos): tot + combo_weight(t)
   // ~min_trials lengthens the segment. A segment shorter than one full
   // crossing would be impossible, so the keyword can only make it longer,
   // and inside a ~within design it applies to each segment -- which is what
@@ -149,7 +216,7 @@ fun geometry_of(exp :: Experiment) :: Geom:
   let inner_trials = body + crossed_pre
   if !exp.within
   | Geom(inner_trials, for List (f in exp.design): plain(f), counts,
-         combinations(cross_counts), cross_idx, inner_trials,
+         combos, cross_idx, inner_trials,
          for List (fi in 0..exp.design.length()): 1,
          pre_of, stride_of)
   | // the ~within factors join the design at the end, each held constant
@@ -163,7 +230,7 @@ fun geometry_of(exp :: Experiment) :: Geom:
     let sustain:
       (for List (fi in 0..exp.design.length()): 1)
         ++ (for List (f in withins): inner_trials)
-    Geom(inner_trials * n_seg, facs, cs, combinations(cross_counts),
+    Geom(inner_trials * n_seg, facs, cs, combos,
          cross_idx, inner_trials, sustain,
          pre_of ++ (for List (f in withins): 0),
          stride_of ++ (for List (f in withins): 1))
@@ -674,6 +741,59 @@ fun sample_uniformly(exp, geom, extra, n, tries_left):
       if check_sequence(exp, cand, ~constraints: extra) == []
       | List.cons(cand, sample_uniformly(exp, geom, extra, n - 1, 10000))
       | sample_uniformly(exp, geom, extra, n, tries_left - 1)
+
+// ------------------------------------------------------------- printing
+// A trial sequence read as a table, with a column per factor, rather than
+// as a list of lists -- which is hard to tell from an error message, and
+// harder still to read once a design has five or six factors. This is
+// SweetPea's print_experiments, give or take the trial numbers.
+//
+// A factor with no value in a trial -- a window factor before its window
+// fits, a strided factor between its scored trials -- leaves its cell
+// empty, which is what SweetPea does for a preamble trial too.
+fun col_pad(str :: String, n :: Int) :: String:
+  for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
+
+fun print_trials(exp :: Experiment, seq :: List) :: Void:
+  let geom = geometry_of(exp)
+  let n_fac = geom.factors.length()
+  // each column is as wide as its factor's name or its widest level
+  let widths:
+    for List (fi in 0..n_fac):
+      for values(w = geom.factors[fi].name.length()) (l in geom.factors[fi].levels):
+        let n = to_string(l).length()
+        if n > w | n | w
+  let n_wide = to_string(seq.length()).length()
+  // the last column is not padded, so no line carries trailing spaces
+  fun cell(v, fi):
+    if fi == n_fac - 1 | v | col_pad(v, widths[fi] + 2)
+  let header:
+    for values(acc = col_pad("", n_wide + 2)) (fi in 0..n_fac):
+      acc ++ cell(geom.factors[fi].name, fi)
+  println(header)
+  let rule:
+    for values(acc = col_pad("", n_wide + 2)) (fi in 0..n_fac):
+      acc ++ cell((for values(d = "") (k in 0..widths[fi]): d ++ "-"), fi)
+  println(rule)
+  let n_seg = seq.length() / geom.seg_len
+  for (i in 0..seq.length()):
+    // a blank line between segments, so a nested design reads as sessions
+    when n_seg > 1 && i > 0 && i mod geom.seg_len == 0
+    | println("")
+    let row:
+      for values(acc = col_pad(to_string(i + 1), n_wide) ++ "  ") (fi in 0..n_fac):
+        let v = if seq[i][fi] == #false | "" | to_string(seq[i][fi])
+        acc ++ cell(v, fi)
+    println(row)
+
+fun print_experiments(exp :: Experiment, trials :: List) :: Void:
+  println(to_string(trials.length()) ++ (if trials.length() == 1
+                                         | " trial sequence found."
+                                         | " trial sequences found."))
+  for (k in 0..trials.length()):
+    println("")
+    println("Experiment " ++ to_string(k + 1) ++ ":")
+    print_trials(exp, trials[k])
 
 fun count_sequences(exp :: Experiment) :: Int:
   factorial(geometry_of(exp).n_trials)

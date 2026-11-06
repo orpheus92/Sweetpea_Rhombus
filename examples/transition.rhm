@@ -32,12 +32,7 @@ println("window reaches back past the start -- so the design is 6 + 1 = "
 println("That leading trial is SweetPea's preamble; its preamble sizes here")
 println("are " ++ to_string(g.preamble) ++ ", one per design factor.\n")
 
-fun show(s):
-  for (i in 0..s.length()):
-    let t = s[i]
-    println("   " ++ to_string(i) ++ "   " ++ t[0]
-              ++ (for values(acc = "") (k in 0..(8 - t[0].length())): acc ++ " ")
-              ++ (if t[1] == #false | "(no value yet)" | t[1]))
+fun show(s): print_trials(plan, s)
 
 let one = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
 show(one)

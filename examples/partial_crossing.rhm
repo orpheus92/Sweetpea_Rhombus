@@ -1,0 +1,83 @@
+#lang rhombus
+// ~require_complete_crossing, which is SweetPea's
+// CrossBlock(..., require_complete_crossing=...).
+//
+// Crossing a derived factor together with its parents asks for something
+// contradictory. congruency is a function of colour and word, so of the
+// eight colour/word/congruency combinations only four can happen:
+// (red, red, inc) is not a trial, it is a contradiction.
+//
+// Required complete -- SweetPea's default, and this one's -- the design has
+// no solution. Relaxed, the combinations that cannot happen are dropped and
+// the crossing is over what is left.
+import:
+  "../sweetpea.rhm" open
+  "../constraints.rhm" open
+  "../synthesize.rhm" open
+
+factor color: ["red", "blue"]
+factor word:  ["red", "blue"]
+factor congruency(color, word):
+  [derived con(a, b): a == b,
+   derived inc(a, b): a != b]
+
+experiment strict:
+  ~design: [color, word, congruency]
+  ~cross: [color, word, congruency]
+
+experiment relaxed:
+  ~design: [color, word, congruency]
+  ~cross: [color, word, congruency]
+  ~require_complete_crossing: #false
+
+let S = "cryptominisat5"
+
+println("crossing colour x word x congruency names 8 combinations:")
+for (c in ["red", "blue"]):
+  for (w in ["red", "blue"]):
+    for (g2 in ["con", "inc"]):
+      let real = g2 == (if c == w | "con" | "inc")
+      println("   " ++ c ++ "/" ++ w ++ "/" ++ g2
+                ++ (if real | "     can happen" | "     contradicts the predicate"))
+println("")
+
+let gs = geometry_of(strict)
+println("required complete (the default): " ++ to_string(gs.n_trials)
+          ++ " trials, one per combination")
+let got_strict = synthesize_trials(strict, 1, ~strategy: #'iterate, ~solver: S)
+if got_strict.length() == 0
+| println("   no sequence -- four of the eight combinations cannot occur,")
+  println("   and the crossing insists on all eight")
+| println("   " ++ to_string(got_strict.length()) ++ " sequence(s) found")
+
+println("")
+let gr = geometry_of(relaxed)
+println("~require_complete_crossing: #false -> " ++ to_string(gr.n_trials)
+          ++ " trials, one per combination that can occur")
+let got = synthesize_trials(relaxed, 2, ~strategy: #'iterate, ~solver: S)
+if got.length() == 0
+| println("   no sequence")
+| for (s in got):
+    println("   " ++ to_string(for List (t in s): t[0] ++ "/" ++ t[1] ++ "/" ++ t[2]))
+
+// The dropped combinations are dropped from the crossing, not permitted
+// elsewhere: a trial that contradicts the predicate is still rejected.
+println("")
+let smuggled = [["red", "red", "inc"], ["red", "blue", "inc"],
+                ["blue", "red", "inc"], ["blue", "blue", "con"]]
+println("a sequence with (red, red, inc) in it -> "
+          ++ to_string(check_sequence(relaxed, smuggled)))
+println("  dropping a combination from the crossing does not make it legal")
+
+// With nothing contradictory to drop, the keyword changes nothing.
+println("")
+experiment plain:
+  ~design: [color, word]
+  ~cross: [color, word]
+  ~require_complete_crossing: #false
+let gp = geometry_of(plain)
+println("a crossing with nothing to drop: " ++ to_string(gp.n_trials)
+          ++ " trials, "
+          ++ to_string(synthesize_trials(plain, 100, ~strategy: #'iterate,
+                                         ~solver: S).length())
+          ++ " sequences -- the same either way")

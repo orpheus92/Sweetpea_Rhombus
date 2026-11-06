@@ -48,7 +48,6 @@ let g = geometry_of(plan)
 
 fun pad(str, n):
   for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
-fun cell(v, n): pad(if v == #false | "-" | v, n)
 
 println("4 trials: colour x word crossed, and four derived factors over them.")
 println("")
@@ -58,17 +57,12 @@ for (i in 0..g.factors.length()):
             ++ " begins at trial " ++ to_string(g.preamble[i])
             ++ ", then every " ++ to_string(g.stride[i]) ++ " trial(s)")
 println("")
-println("   trial  colour  word    congruency  switched  emphasis  alternating")
 let one = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
-for (i in 0..one.length()):
-  let t = one[i]
-  println("   " ++ pad(to_string(i), 7) ++ cell(t[0], 8) ++ cell(t[1], 8)
-            ++ cell(t[2], 12) ++ cell(t[3], 10) ++ cell(t[4], 10)
-            ++ cell(t[5], 10))
+print_trials(plan, one)
 println("")
-println("   switched has no value on trial 0: it compares two congruency")
-println("   values and there is only one by then. alternating is scored on")
-println("   trials 1 and 3 only, because its stride is 2.")
+println("  switched has no value on the first trial: it compares two")
+println("  congruency values and there is only one by then. alternating is")
+println("  scored on every other trial, because its stride is 2.")
 
 // Constraints do not care how deep a factor is, or that it is scored on
 // only some trials. It is a factor with levels.
@@ -77,11 +71,8 @@ println("the same design, asking for the deeper factor to alternate:")
 let alt = synthesize_trials(plan, 1, ~constraints: [no_repeats(switched)],
                             ~strategy: #'iterate, ~solver: S)
 if alt.length() == 0
-| println("   none")
-| for (i in 0..alt[0].length()):
-    let t = alt[0][i]
-    println("   " ++ pad(to_string(i), 7) ++ cell(t[0], 8) ++ cell(t[1], 8)
-              ++ cell(t[2], 12) ++ cell(t[3], 10))
+| println("  none")
+| print_trials(plan, alt[0])
 
 // And the checker reads the same requirements, so it judges every column,
 // however deep.

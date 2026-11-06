@@ -33,15 +33,37 @@ println("  raises the design to " ++ to_string(g.n_trials)
           ++ " trials, so each combination appears twice")
 println("")
 
-fun pad(str, n):
-  for values(acc = str) (k in 0..(n - str.length())): acc ++ " "
+// A crossing says how often each combination appears. It says nothing about
+// the order they appear in, so the solver is free to block them together --
+// and left to itself it does, which is not a sequence anyone would run:
+println("the crossing alone, with nothing said about order:")
+let unordered = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
+println("    colour: " ++ to_string(for List (t in unordered): t[0]))
+let same_colour:
+  for values(n = 0) (i in 1..unordered.length()):
+    if unordered[i][0] == unordered[i - 1][0] | n + 1 | n
+let same_trial:
+  for values(n = 0) (i in 1..unordered.length()):
+    if unordered[i] == unordered[i - 1] | n + 1 | n
+println("  Every combination appears exactly twice, so this satisfies the")
+println("  design. It also puts the same colour in adjacent trials "
+          ++ to_string(same_colour) ++ " times, and repeats a whole trial "
+          ++ to_string(same_trial) ++ " times -- #'iterate returns whatever")
+println("  the solver reaches first, and nothing here asked for an order.")
+println("")
 
-let trials = synthesize_trials(plan, 1, ~strategy: #'iterate, ~solver: S)[0]
-for (i in 0..trials.length()):
-  let t = trials[i]
-  println("  " ++ (if i < 9 | " " | "") ++ to_string(i + 1)
-            ++ "   colour " ++ pad(t[0], 6) ++ "  word " ++ pad(t[1], 6)
-            ++ "  " ++ t[2])
+// So a real design says what it wants of the order. These are ordering
+// constraints a Stroop experiment would actually carry: congruency never
+// twice running, and no more than two trials of one colour together.
+println("the same design with the order constrained:")
+let cons = [no_repeats(congruency), at_most_k_in_a_row(2, color)]
+let got = synthesize_trials(plan, 1, ~constraints: cons,
+                            ~strategy: #'iterate, ~solver: S)
+let ordered_ok = got.length() > 0
+let trials = if ordered_ok | got[0] | unordered
+if ordered_ok
+| print_trials(plan, trials)
+| println("  no sequence satisfies those constraints")
 
 // The word is not free: it follows from the colour and the congruency the
 // crossing asked for. Nothing in the design states it.
@@ -52,16 +74,13 @@ let wrong:
     if t[2] == want | n | n + 1
 println("  trials whose congruency does not match colour and word: "
           ++ to_string(wrong))
+println("  (the constraints above name congruency as readily as colour:")
+println("   a derived factor is a factor with levels like any other)")
 
-// Constraints do not care that congruency is derived: it is a factor with
-// levels like any other.
+// #'random needs no ordering help to look like an experiment, because it
+// draws uniformly from the valid sequences rather than taking the first.
 println("")
-let no_runs = synthesize_trials(plan, 1,
-                                ~constraints: [no_repeats(congruency),
-                                               at_most_k_in_a_row(2, color)],
-                                ~strategy: #'iterate, ~solver: S)
-if no_runs.length() == 0
-| println("  no_repeats(congruency) + at_most_k_in_a_row(2, color): none")
-| println("  with no_repeats(congruency) and at_most_k_in_a_row(2, color):")
-  println("    congruency: " ++ to_string(for List (t in no_runs[0]): t[2]))
-  println("    colour:     " ++ to_string(for List (t in no_runs[0]): t[0]))
+println("the unconstrained design again, sampled instead of solved:")
+let drawn = synthesize_trials(plan, 1, ~strategy: #'random)[0]
+println("    colour: " ++ to_string(for List (t in drawn): t[0]))
+println("    word:   " ++ to_string(for List (t in drawn): t[1]))
