@@ -1,3 +1,5 @@
 compiled/
 *.zo
 *.dep
+sweetpea/
+scribblings/doc/
